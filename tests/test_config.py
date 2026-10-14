@@ -84,9 +84,9 @@ class ConfigurationTests(unittest.TestCase):
         auth = self.directory / "auth.json"
         atomic_write(auth, b'{"tokens":"do-not-migrate"}')
         backup = apply_connection(self.directory, self.payload, PASSWORD)
-        current = tomllib.loads((self.directory / FILES[0]).read_text())
+        current = tomllib.loads((self.directory / FILES[0]).read_text(encoding="utf-8"))
         before = tomllib.loads(original.decode())
-        self.assertIn("# 用户注释", (self.directory / FILES[0]).read_text())
+        self.assertIn("# 用户注释", (self.directory / FILES[0]).read_text(encoding="utf-8"))
         for field in ("plugins", "mcp_servers"):
             self.assertEqual(current[field], before[field])
         self.assertEqual(current["model_providers"]["other"], before["model_providers"]["other"])
@@ -95,7 +95,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(current["model_catalog_json"], str(self.directory / FILES[2]))
         self.assertEqual(read_connection(self.directory), self.payload)
         self.assertEqual(auth.read_bytes(), b'{"tokens":"do-not-migrate"}')
-        self.assertNotIn(KEY, backup.read_text())
+        self.assertNotIn(KEY, backup.read_text(encoding="utf-8"))
         if sys.platform != "win32":
             self.assertEqual((self.directory / FILES[1]).stat().st_mode & 0o777, 0o600)
             self.assertEqual(backup.stat().st_mode & 0o777, 0o600)
@@ -108,9 +108,9 @@ class ConfigurationTests(unittest.TestCase):
         destination = self.root / "新电脑配置"
         apply_connection(destination, decrypt(exported, PASSWORD), PASSWORD)
         self.assertEqual(read_connection(destination), self.payload)
-        self.assertNotIn(str(self.directory), (destination / FILES[0]).read_text())
+        self.assertNotIn(str(self.directory), (destination / FILES[0]).read_text(encoding="utf-8"))
         apply_connection(destination, self.payload, PASSWORD)
-        parsed = tomllib.loads((destination / FILES[0]).read_text())
+        parsed = tomllib.loads((destination / FILES[0]).read_text(encoding="utf-8"))
         self.assertEqual(list(parsed["model_providers"]), [PROVIDER])
 
     def test_encrypted_restore_recovers_exact_bytes_and_missing_files(self):
@@ -208,10 +208,10 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_export_does_not_execute_unknown_credential_helpers(self):
         apply_connection(self.directory, self.payload, PASSWORD)
-        text = (self.directory / FILES[0]).read_text()
+        text = (self.directory / FILES[0]).read_text(encoding="utf-8")
         original = credential_auth(self.directory)["command"]
         text = text.replace(original.replace("\\", "\\\\"), "arbitrary-helper")
-        (self.directory / FILES[0]).write_text(text)
+        (self.directory / FILES[0]).write_text(text, encoding="utf-8")
         with mock.patch("subprocess.run") as execute, self.assertRaisesRegex(ConfigError, "无法识别"):
             read_connection(self.directory)
         execute.assert_not_called()
@@ -235,7 +235,7 @@ class ConfigurationTests(unittest.TestCase):
         (self.directory / FILES[1]).rename(key_path)
         (self.directory / FILES[2]).rename(catalog_path)
         path = self.directory / FILES[0]
-        document = config.tomlkit.parse(path.read_text())
+        document = config.tomlkit.parse(path.read_text(encoding="utf-8"))
         document["model_catalog_json"] = str(catalog_path)
         document["model_providers"][PROVIDER]["auth"] = {"command": "/bin/cat", "args": [str(key_path)]}
         path.write_text(config.tomlkit.dumps(document), encoding="utf-8")
@@ -247,7 +247,7 @@ class ConfigurationTests(unittest.TestCase):
         exported, content = export_connection(self.directory, PASSWORD, self.root / "export.cproxy")
         self.assertEqual(exported, self.payload)
         self.assertEqual(decrypt(content, PASSWORD), self.payload)
-        self.assertEqual((self.root / "export.cproxy").read_text(), content)
+        self.assertEqual((self.root / "export.cproxy").read_text(encoding="utf-8"), content)
 
     def test_backup_folder_and_mutation_races_abort_before_config_writes(self):
         atomic_write(self.directory / FILES[0], b'model="old"\n')

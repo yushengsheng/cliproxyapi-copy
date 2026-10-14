@@ -121,7 +121,7 @@ class App(TkinterDnD.Tk):
         return entry
 
     def _layout(self):
-        shell = ttk.Frame(self, padding=(24, 14, 24, 10))
+        shell = ttk.Frame(self, padding=(24, 10, 24, 10))
         shell.pack(fill="both", expand=True)
         header = ttk.Frame(shell)
         header.pack(fill="x")
@@ -145,13 +145,13 @@ class App(TkinterDnD.Tk):
         self._export_tab(export_tab)
         self._import_tab(import_tab)
         footer = ttk.Frame(shell)
-        footer.pack(fill="x", pady=(10, 0))
+        footer.pack(fill="x", pady=(8, 0))
         ttk.Label(footer, textvariable=self.status, style="Muted.TLabel", wraplength=570).pack(side="left")
         self._button(footer, "恢复加密备份", self._restore).pack(side="right")
 
     def _summary(self, parent):
-        box = ttk.Frame(parent, style="Card.TFrame", padding=10)
-        box.pack(fill="x", pady=(8, 10))
+        box = ttk.Frame(parent, style="Card.TFrame", padding=8)
+        box.pack(fill="x", pady=(8, 8))
         fields = []
         for label in ("服务地址", "默认模型", "可选模型"):
             row = ttk.Frame(box, style="Card.TFrame")
@@ -191,8 +191,8 @@ class App(TkinterDnD.Tk):
     def _import_tab(self, tab):
         ttk.Label(tab, text="导入一份加密线路配置", style="Heading.TLabel").pack(anchor="w")
         self.drop_area = tk.Label(tab, text="将配置文件拖到这里", bg="#eaf3f4", fg="#207789",
-                                  padx=20, pady=10, relief="flat")
-        self.drop_area.pack(fill="x", pady=(10, 10))
+                                  padx=20, pady=8, relief="flat")
+        self.drop_area.pack(fill="x", pady=(8, 8))
         self.drop_area.drop_target_register(DND_FILES)
         self.drop_area.dnd_bind("<<Drop>>", self._drop)
         actions = ttk.Frame(tab)
@@ -211,7 +211,7 @@ class App(TkinterDnD.Tk):
         self.import_text.bind("<<Paste>>", self._paste_event)
         self.import_text.bind("<Command-v>" if sys.platform == "darwin" else "<Control-v>", self._paste_event)
         row = ttk.Frame(tab)
-        row.pack(fill="x", pady=(12, 0))
+        row.pack(fill="x", pady=(10, 0))
         ttk.Label(row, text="解密密码").pack(side="left", padx=(0, 10))
         self.import_entry = self._entry(row, self.import_password, True)
         self.import_entry.pack(side="left", fill="x", expand=True)

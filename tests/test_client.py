@@ -37,7 +37,7 @@ class ClientSelectionTests(unittest.TestCase):
         self.assertEqual(configuration_directory(home, {"CODEX_HOME": "~/custom"}), home / "custom")
         record = home / "Library/Application Support/linux服务器管理/client-config-directories.json"
         record.parent.mkdir(parents=True)
-        record.write_text(json.dumps({"codex": str(custom)}))
+        record.write_text(json.dumps({"codex": str(custom)}), encoding="utf-8")
         self.assertEqual(configuration_directory(home, {}), custom)
         self.assertEqual(resolve_client(self.application(), home, {})[1], custom)
 

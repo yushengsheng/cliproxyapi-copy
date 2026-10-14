@@ -60,7 +60,7 @@ class DesktopFlowTests(unittest.TestCase):
 
     def test_drop_filename_with_spaces_and_nonascii_then_wrong_password(self):
         path = self.root / "中文 空格'线路.cproxy"
-        path.write_text(self.content)
+        path.write_bytes(self.content.encode("utf-8"))
         self.app._drop(SimpleNamespace(data="{" + str(path) + "}"))
         self.complete()
         self.assertEqual(self.app.file_content, self.content.encode())
@@ -84,7 +84,7 @@ class DesktopFlowTests(unittest.TestCase):
 
     def test_file_clipboard_import_and_multi_file_drop(self):
         path = self.root / "copy.cproxy"
-        path.write_text(self.content)
+        path.write_bytes(self.content.encode("utf-8"))
         with mock.patch.object(self.app, "clipboard_get", return_value=""), mock.patch("cliproxy_config.gui.clipboard_file", return_value=str(path)):
             self.app._paste()
         self.complete()
