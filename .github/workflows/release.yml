@@ -1,0 +1,136 @@
+name: Native build and release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and verify ${{ matrix.name }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS-arm64
+            os: macos-15
+            architecture: arm64
+            python: .venv/bin/python
+          - name: macOS-x86_64
+            os: macos-15-intel
+            architecture: x64
+            python: .venv/bin/python
+          - name: Windows-x64
+            os: windows-2022
+            architecture: x64
+            python: .venv/Scripts/python.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          architecture: ${{ matrix.architecture }}
+      - name: Install into a fresh environment
+        shell: bash
+        env:
+          TASK_PYTHON: ${{ matrix.python }}
+        run: |
+          python -m venv .venv
+          "$TASK_PYTHON" -m pip install --disable-pip-version-check -r requirements-build.txt
+          "$TASK_PYTHON" -m pip check
+      - name: Run all source and desktop tests
+        shell: bash
+        env:
+          TASK_PYTHON: ${{ matrix.python }}
+        run: |
+          "$TASK_PYTHON" -m unittest discover -s tests -v
+          "$TASK_PYTHON" -m compileall -q cliproxy_config scripts tests launch.py
+          "$TASK_PYTHON" launch.py --self-check
+      - name: Build native application
+        shell: bash
+        env:
+          TASK_PYTHON: ${{ matrix.python }}
+        run: '"$TASK_PYTHON" scripts/build.py'
+      - name: Extract and verify the packaged application
+        shell: bash
+        env:
+          TASK_PYTHON: ${{ matrix.python }}
+        run: '"$TASK_PYTHON" scripts/verify_release.py'
+      - name: Save verified release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.name }}
+          if-no-files-found: error
+          path: |
+            dist/*.zip
+            dist/*.check.json
+
+  release:
+    name: Publish verified release
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+      - name: Validate manifests and prepare release notes
+        shell: python
+        env:
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          import hashlib, json, os
+          from pathlib import Path
+          from cliproxy_config import VERSION
+          directory = Path('dist')
+          archives = sorted(directory.glob('*.zip'))
+          assert len(archives) == 3, 'Expected three native release packages'
+          checksums = []
+          systems = []
+          for archive in archives:
+              report = json.loads(archive.with_suffix('.check.json').read_text(encoding='utf-8'))
+              digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+              assert report['version'] == VERSION and report['sha256'] == digest
+              assert report['source_match'] == 'ok' and report['runtime']['frozen']
+              assert all(report['runtime'][name] == 'ok' for name in ('crypto', 'migration', 'credential_helper', 'layout'))
+              checksums.append(digest + '  ' + archive.name)
+              minimum = report.get('minimum_system_version')
+              systems.append('- ' + archive.name + ('：最低 macOS ' + minimum if minimum else '：Windows x64 原生包'))
+          (directory / 'SHA256SUMS').write_text('\n'.join(checksums) + '\n', encoding='ascii')
+          notes = '# CLIProxyAPI 配置助手 v' + VERSION + '\n\n'
+          notes += Path('CHANGELOG.md').read_text(encoding='utf-8').split('## ' + VERSION + '\n', 1)[1]
+          notes += '\n## 下载及验证\n\n' + '\n'.join(systems) + '\n\n'
+          notes += '每个包均在对应 GitHub 原生 runner 中通过全部测试，并从最终压缩包解压运行，验证加密、迁移、备份恢复与本机密钥读取。校验值见 SHA256SUMS；详细验证见同名 .check.json。\n\n'
+          notes += 'Windows 包请解压完整目录后运行 CLIProxyAPI-Config.exe，无需安装 Python。macOS 包解压后打开 .app；使用临时签名，未经 Apple 公证，必要时在系统隐私与安全性设置中允许打开。\n\n'
+          notes += '构建记录：' + os.environ['RUN_URL'] + '\n'
+          Path('release-notes.md').write_text(notes, encoding='utf-8')
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as output:
+              output.write('RELEASE_VERSION=' + VERSION + '\n')
+      - name: Publish new version after every platform passed
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          release_tag="v$RELEASE_VERSION"
+          if gh release view "$release_tag" >/dev/null 2>&1; then
+            echo "Release $release_tag already exists; its assets remain unchanged."
+            exit 0
+          fi
+          gh release create "$release_tag" dist/*.zip dist/*.check.json dist/SHA256SUMS \
+            --target "$GITHUB_SHA" --title "CLIProxyAPI 配置助手 $release_tag" \
+            --notes-file release-notes.md --latest
