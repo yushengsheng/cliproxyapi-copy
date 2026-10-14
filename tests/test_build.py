@@ -47,6 +47,7 @@ class BuildTests(unittest.TestCase):
                  mock.patch.object(build.sys, "platform", "darwin"), \
                  mock.patch.object(build.sys, "argv", ["build.py", "--target-arch", "universal2"]), \
                  mock.patch.object(build.platform, "machine", return_value="arm64"), \
+                 mock.patch.object(build, "ensure_static_crypto"), \
                  mock.patch.object(build, "run") as run, mock.patch("builtins.print"):
                 build.main()
             self.assertTrue(run.call_args.args[0][-1].endswith(f"macOS-universal2-{build.VERSION}.zip"))

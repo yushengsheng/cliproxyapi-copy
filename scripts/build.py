@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+from importlib.metadata import distribution
+import os
 from pathlib import Path
 import platform
 import plistlib
@@ -43,12 +45,38 @@ def minimum_macos_version(bundle: Path) -> str:
     return ".".join(str(part) for part in (minimum if minimum[2] else minimum[:2]))
 
 
+def ensure_static_crypto():
+    if sys.platform != "darwin":
+        return
+    package = distribution("cryptography")
+    bindings = next(package.locate_file(path) for path in package.files
+                    if Path(path).name.startswith("_rust.") and str(path).endswith(".so"))
+    linked = subprocess.run(["otool", "-L", str(bindings)], capture_output=True, text=True, check=True)
+    openssl = re.search(r"^\s+(/[^\n]*?/libssl[^\s]*\.dylib)\s", linked.stdout, re.MULTILINE)
+    if openssl is None:
+        return
+    prefix = Path(openssl.group(1)).parent.parent
+    if not all((prefix / "lib" / name).is_file() for name in ("libssl.a", "libcrypto.a")):
+        raise SystemExit("加密库动态链接 OpenSSL，但未找到对应静态库，无法生成可靠的独立程序。")
+    environment = os.environ.copy()
+    environment.update(OPENSSL_STATIC="1", OPENSSL_DIR=str(prefix))
+    subprocess.run([sys.executable, "-m", "pip", "install", "--force-reinstall", "--no-deps",
+                    "--no-binary=cryptography", "--no-cache-dir", "cryptography==" + package.version],
+                   env=environment, check=True, timeout=600)
+    linked = subprocess.run(["otool", "-L", str(bindings)], capture_output=True, text=True, check=True)
+    if re.search(r"/lib(?:ssl|crypto)[^\s]*\.dylib", linked.stdout):
+        raise SystemExit("加密库仍动态链接 OpenSSL，已停止发布构建。")
+
+
 def main():
     parser = argparse.ArgumentParser(description="构建自带运行环境的桌面程序")
     parser.add_argument("--target-arch", choices=("arm64", "x86_64", "universal2"))
     options = parser.parse_args()
     if sys.platform not in ("darwin", "win32"):
         parser.error("请在 macOS 或 Windows 本机上构建相应安装包。")
+    if sys.stdout is not None:
+        sys.stdout.reconfigure(encoding="utf-8")
+    ensure_static_crypto()
     command = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--windowed",
                "--name", "CLIProxyAPI-Config", "--collect-all", "tkinterdnd2",
                "--osx-bundle-identifier", "local.cliproxyapi.config", "--distpath", str(ROOT / "dist"),

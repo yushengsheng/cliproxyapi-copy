@@ -27,6 +27,8 @@ def fingerprint(code):
 
 
 def main():
+    if sys.stdout is not None:
+        sys.stdout.reconfigure(encoding="utf-8")
     archives = list((ROOT / "dist").glob(f"*-{VERSION}.zip"))
     if len(archives) != 1:
         raise SystemExit("验证目录必须仅含当前平台的一个发布包。")

@@ -56,7 +56,7 @@ macOS 最低系统版本见每次 Release 的说明。构建脚本会核对包�
 
 需要 **Python 3.11 以上，含 tkinter**。推荐 Python 官方安装包；部分精简 Python 不包含 Tk。运行依赖及其传递依赖的版本固定在 `requirements.txt`。
 
-Intel macOS 使用仍提供官方 universal2 二进制轮子的 cryptography 48.0.1；其余平台使用 50.0.2，避免从源码编译时引入系统 OpenSSL 库冲突。
+Intel macOS 的加密库不再提供官方二进制轮子，构建时需要 Rust 和包含静态库的 OpenSSL。打包脚本会将加密库静态链接至 OpenSSL，避免与 Python 自带的 OpenSSL 动态库发生冲突；GitHub Intel runner 提供这些构建工具。
 
 macOS：
 

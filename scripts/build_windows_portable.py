@@ -31,6 +31,8 @@ def download_wheels(wheels: Path):
 
 
 def main():
+    if sys.stdout is not None:
+        sys.stdout.reconfigure(encoding="utf-8")
     work = ROOT / "build" / "windows-portable"
     work.mkdir(parents=True, exist_ok=True)
     archive = work / "python-windows-x64.tar.gz"
