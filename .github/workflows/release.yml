@@ -45,6 +45,10 @@ jobs:
           TASK_PYTHON: ${{ matrix.python }}
         run: |
           python -m venv .venv
+          if [[ "$RUNNER_OS" == "macOS" && "$RUNNER_ARCH" == "X64" ]]; then
+            export OPENSSL_STATIC=1
+            export OPENSSL_DIR="$(brew --prefix openssl@3)"
+          fi
           "$TASK_PYTHON" -m pip install --disable-pip-version-check -r requirements-build.txt
           "$TASK_PYTHON" -m pip check
       - name: Run all source and desktop tests
@@ -93,8 +97,9 @@ jobs:
         env:
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          import hashlib, json, os
+          import hashlib, json, os, sys
           from pathlib import Path
+          sys.path.insert(0, str(Path.cwd()))
           from cliproxy_config import VERSION
           directory = Path('dist')
           archives = sorted(directory.glob('*.zip'))
