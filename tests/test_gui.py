@@ -192,7 +192,7 @@ class UnifiedDesktopFlowTests(unittest.TestCase):
         self.app.directory.set(str(self.root/'client'))
         with mock.patch('cliproxy_config.gui.filedialog.asksaveasfilename',return_value=str(backup)):
             self.app._apply();self.complete()
-        saved=(self.root/'preferences.json').read_text()
+        saved=(self.root/'preferences.json').read_text(encoding='utf-8')
         self.assertNotIn('fixture-key',saved)
         self.assertNotIn(PASSWORD,saved)
         self.assertNotIn('profile',json.loads(saved))
@@ -222,7 +222,7 @@ class UnifiedDesktopFlowTests(unittest.TestCase):
         target=self.root/'invalid-backup-target';self.app.directory.set(str(target))
         source=self.root/'broken.cproxybackup'
         source.write_text(json.dumps({'kind':'backup','version':1,'agent':'claude',
-            'directory':str(target),'files':[{}]}))
+            'directory':str(target),'files':[{}]}),encoding='utf-8')
         with mock.patch('cliproxy_config.gui.filedialog.askopenfilename',return_value=str(source)), \
              mock.patch('cliproxy_config.gui.filedialog.asksaveasfilename',side_effect=AssertionError('must not save')):
             self.app._restore()
@@ -451,7 +451,7 @@ class PermissionFreeBrowserTests(unittest.TestCase):
                 self.app.destroy()
                 path=self.root/'preferences.json'
                 path.write_text(json.dumps({'browser':browser,'url':'https://fixture.invalid',
-                    'backup_directory':str(self.root),'export_directory':str(self.root)}))
+                    'backup_directory':str(self.root),'export_directory':str(self.root)}),encoding='utf-8')
                 self.app=App(preferences_path=path);self.app.withdraw()
                 self.assertEqual(self.app.browser.get(),'内置登录窗口')
                 self.assertEqual(self.app._initial_directory('backup'),str(self.root))
@@ -475,7 +475,7 @@ class PermissionFreeBrowserTests(unittest.TestCase):
         self.assertEqual(self.app.browser.get(),'内置登录窗口')
         self.assertIs(self.app.gateway,self.gateway)
         self.assertEqual(len(self.app.tree.get_children()),2)
-        self.assertEqual(json.loads((self.root/'preferences.json').read_text())['browser'],'内置登录窗口')
+        self.assertEqual(json.loads((self.root/'preferences.json').read_text(encoding='utf-8'))['browser'],'内置登录窗口')
         self.error.assert_not_called()
 
     def test_backend_failure_or_cancellation_does_not_open_another_window(self):

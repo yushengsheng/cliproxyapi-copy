@@ -41,7 +41,7 @@ class BrowserReaderTests(unittest.TestCase):
 
     def test_cancel_and_missing_runtime_are_distinguished(self):
         def launch(args,**kw):
-            Path(args[-1]).write_text('{"status":"cancelled"}')
+            Path(args[-1]).write_text('{"status":"cancelled"}', encoding='utf-8')
             return mock.Mock()
         with mock.patch('cliproxy_config.browser.subprocess.Popen', side_effect=launch):
             with self.assertRaisesRegex(ConfigError, '已取消'):
@@ -56,7 +56,7 @@ class BrowserReaderTests(unittest.TestCase):
                 _native_eval('https://fixture.invalid/management.html', 'Chrome', 'script()')
         for value in ('[]', '{broken'):
             def launch(args, **kwargs):
-                Path(args[-1]).write_text(value)
+                Path(args[-1]).write_text(value, encoding='utf-8')
                 return mock.Mock()
             with self.subTest(value=value), mock.patch('cliproxy_config.browser.subprocess.Popen', side_effect=launch):
                 with self.assertRaisesRegex(ConfigError, '无效数据'):
@@ -108,7 +108,7 @@ class BrowserReaderTests(unittest.TestCase):
                         capture_output=True,timeout=20)
                     self.assertEqual(result.returncode,0,result.stderr.decode()[-500:])
                     self.assertEqual(json.loads(output.read_bytes()),{'status':'ok','keys':['fixture-client']})
-                    self.assertNotIn('never-export',output.read_text())
+                    self.assertNotIn('never-export',output.read_text(encoding='utf-8'))
                     self.assertEqual(output.stat().st_mode & 0o777,0o600)
                 finally:
                     server.shutdown();server.server_close();thread.join(timeout=2)

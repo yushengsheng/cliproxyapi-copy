@@ -38,7 +38,7 @@ class ReleaseManifestTests(unittest.TestCase):
 
     def test_complete_native_reports_generate_checksums_and_notes(self):
         self.assertEqual(release_manifest.prepare_release(self.directory, self.root), release_manifest.VERSION)
-        self.assertEqual(len((self.directory / "SHA256SUMS").read_text().splitlines()), 3)
+        self.assertEqual(len((self.directory / "SHA256SUMS").read_text(encoding="ascii").splitlines()), 3)
         notes = (self.root / "release-notes.md").read_text(encoding="utf-8")
         self.assertIn("Fixture change", notes)
         self.assertIn("WebView2", notes)

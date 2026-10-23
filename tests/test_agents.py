@@ -50,7 +50,7 @@ class AgentAdapterTests(unittest.TestCase):
                 original_auth = (directory / 'auth.json').read_bytes()
                 before = config._snapshot(directory, definition.files)
                 backup = apply_agent(agent, directory, payload(), PASSWORD)
-                self.assertNotIn('fixture-secret', backup.read_text())
+                self.assertNotIn('fixture-secret', backup.read_text(encoding='utf-8'))
                 after = config._snapshot(directory, definition.files)
                 rendered = render_agent(agent, {}, payload(), directory)
                 combined = b'\n'.join(row['data'] for row in after.values())

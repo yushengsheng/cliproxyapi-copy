@@ -48,7 +48,7 @@ class LocalSourceLauncherTests(unittest.TestCase):
     def test_app_is_only_a_small_launcher_not_a_program_package(self):
         with mock.patch.object(local_app.subprocess, 'run', side_effect=AssertionError('must not build')):
             local_app.create_launcher(self.root)
-        contents = {str(path.relative_to(self.app)) for path in self.app.rglob('*') if path.is_file()}
+        contents = {path.relative_to(self.app).as_posix() for path in self.app.rglob('*') if path.is_file()}
         self.assertEqual(contents, {'Contents/Info.plist', 'Contents/MacOS/launcher'})
         self.assertLess(sum(path.stat().st_size for path in self.app.rglob('*') if path.is_file()), 8192)
         info = plistlib.loads((self.app / 'Contents/Info.plist').read_bytes())
