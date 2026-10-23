@@ -4,4 +4,7 @@ pycparser==3.11
 tomlkit==0.15.1
 tkinterdnd2==0.6.4
 truststore==0.10.5
+ruamel.yaml==0.18.16
+ruamel.yaml.clib==0.2.15; implementation_name == 'cpython' and python_version < '3.14'
 
+pywebview==6.1

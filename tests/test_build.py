@@ -4,10 +4,19 @@ import tempfile
 import unittest
 from unittest import mock
 
-from scripts import build, build_windows_portable
+from scripts import build
 
 
 class BuildTests(unittest.TestCase):
+    def test_windows_executable_has_the_same_product_and_file_version(self):
+        with tempfile.TemporaryDirectory() as temp, mock.patch.object(build, "ROOT", Path(temp)):
+            path = build.windows_version_file()
+            source = path.read_text(encoding='utf-8')
+            self.assertIn("'FileVersion', '" + build.VERSION + "'", source)
+            self.assertIn("'ProductVersion', '" + build.VERSION + "'", source)
+            self.assertIn("CLIProxyAPI-Config.exe", source)
+            compile(source, str(path), 'eval')
+
     def test_macos_minimum_matches_bundled_library_requirements(self):
         with tempfile.TemporaryDirectory() as temp:
             bundle = Path(temp)
@@ -20,21 +29,6 @@ class BuildTests(unittest.TestCase):
                 return mock.Mock(stdout="cmd LC_VERSION_MIN_MACOSX\ncmdsize 16\nversion 10.15\n")
             with mock.patch.object(build.subprocess, "run", side_effect=inspect):
                 self.assertEqual(build.minimum_macos_version(bundle), "14.0")
-
-    def test_windows_download_discards_stale_dependency_wheels(self):
-        with tempfile.TemporaryDirectory() as temp:
-            wheels = Path(temp) / "wheels"
-            wheels.mkdir()
-            stale = wheels / "fixture-previous-version.whl"
-            stale.write_bytes(b"stale")
-            def download(command, check):
-                self.assertTrue(check)
-                self.assertFalse(stale.exists())
-                destination = Path(command[command.index("--dest") + 1])
-                (destination / "fixture-current-version.whl").write_bytes(b"current")
-            with mock.patch.object(build_windows_portable.subprocess, "run", side_effect=download):
-                build_windows_portable.download_wheels(wheels)
-            self.assertEqual([path.name for path in wheels.iterdir()], ["fixture-current-version.whl"])
 
     def test_mac_archive_name_matches_requested_architecture(self):
         with tempfile.TemporaryDirectory() as temp:

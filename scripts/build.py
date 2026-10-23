@@ -68,6 +68,22 @@ def ensure_static_crypto():
         raise SystemExit("加密库仍动态链接 OpenSSL，已停止发布构建。")
 
 
+def windows_version_file() -> Path:
+    version = tuple(int(part) for part in re.match(r"(\d+)\.(\d+)\.(\d+)", VERSION).groups()) + (0,)
+    fields = {"FileDescription": "CLIProxyAPI 配置助手", "FileVersion": VERSION,
+              "InternalName": "CLIProxyAPI-Config", "OriginalFilename": "CLIProxyAPI-Config.exe",
+              "ProductName": "CLIProxyAPI 配置助手", "ProductVersion": VERSION}
+    strings = ",\n".join("StringStruct(" + repr(key) + ", " + repr(value) + ")" for key, value in fields.items())
+    content = ("VSVersionInfo(ffi=FixedFileInfo(filevers=" + repr(version) + ", prodvers=" + repr(version) +
+               ", mask=0x3f, flags=0, OS=0x40004, fileType=0x1, subtype=0, date=(0,0)), kids=["
+               "StringFileInfo([StringTable('080404b0', [" + strings + "])]), "
+               "VarFileInfo([VarStruct('Translation', [2052, 1200])])])\n")
+    path = ROOT / "build/windows-version.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
 def main():
     parser = argparse.ArgumentParser(description="构建自带运行环境的桌面程序")
     parser.add_argument("--target-arch", choices=("arm64", "x86_64", "universal2"))
@@ -78,14 +94,21 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8")
     ensure_static_crypto()
     command = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--windowed",
-               "--name", "CLIProxyAPI-Config", "--collect-all", "tkinterdnd2",
+               "--name", "CLIProxyAPI-Config", "--collect-all", "tkinterdnd2", "--collect-all", "webview",
                "--osx-bundle-identifier", "local.cliproxyapi.config", "--distpath", str(ROOT / "dist"),
                "--workpath", str(ROOT / "build"), str(ROOT / "launch.py")]
     if options.target_arch:
         if sys.platform != "darwin":
             parser.error("--target-arch 仅用于 macOS；请在对应架构的 Windows 上构建。")
         command.extend(["--target-arch", options.target_arch])
-    for package in ("cryptography", "cffi", "pycparser", "tomlkit", "tkinterdnd2", "truststore", "pyinstaller"):
+    if sys.platform == "win32":
+        command.extend(["--version-file", str(windows_version_file())])
+    for package in ("cryptography", "cffi", "pycparser", "tomlkit", "tkinterdnd2", "truststore", "ruamel.yaml", "ruamel.yaml.clib", "pyinstaller", "pywebview", "proxy_tools", "bottle", "typing_extensions"):
+        command.extend(["--copy-metadata", package])
+    browser_packages = (("pyobjc-core", "pyobjc-framework-Cocoa", "pyobjc-framework-Quartz",
+        "pyobjc-framework-WebKit", "pyobjc-framework-security", "pyobjc-framework-UniformTypeIdentifiers")
+        if sys.platform == "darwin" else ("pythonnet", "clr_loader"))
+    for package in browser_packages:
         command.extend(["--copy-metadata", package])
     python_license = next((path for path in (Path(sys.base_prefix) / "LICENSE.txt",
                           Path(sysconfig.get_path("stdlib")) / "LICENSE.txt") if path.is_file()), None)

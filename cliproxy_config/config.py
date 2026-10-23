@@ -1,26 +1,23 @@
-"""Read connections, regenerate native paths, and apply recoverable changes."""
+"""Validate model nodes, render Codex settings, and commit recoverable changes."""
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager, nullcontext
 import datetime as dt
 import json
 import ntpath
 import os
 from pathlib import Path
 import secrets
-import ssl
 import stat
 import sys
 import tempfile
 import tomllib
-import urllib.error
 import urllib.parse
-import urllib.request
 
 import tomlkit
-import truststore
 
-from .crypto import ConfigError, MAX_FILE_BYTES, decrypt, encrypt
+from .crypto import ConfigError, decode_document, encode_document, encrypt
 
 PROVIDER = "linux-manager-cliproxyapi"
 FILES = ("config.toml", "linux-manager-cliproxyapi.key", "linux-manager-cliproxyapi-models.json")
@@ -28,10 +25,6 @@ MAX_LOCAL_BYTES = 4 * 1024 * 1024
 MODEL_SETTINGS = {"model_reasoning_effort", "model_reasoning_summary", "model_verbosity",
                   "model_context_window", "model_auto_compact_token_limit"}
 PROVIDER_SETTINGS = {"request_max_retries", "stream_max_retries", "stream_idle_timeout_ms", "supports_websockets"}
-
-
-def default_directory() -> Path:
-    return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex").expanduser().absolute()
 
 
 def safe_path(path: Path) -> None:
@@ -117,6 +110,19 @@ def validate_connection(payload: dict) -> dict:
         if not isinstance(row, dict):
             raise ConfigError("模型目录包含无效项目。")
         slugs.append(_text(row.get("slug"), "模型名称"))
+        if "context_window" in row and (type(row["context_window"]) is not int or not 0 < row["context_window"] <= 2**31 - 1):
+            raise ConfigError("模型上下文窗口格式不正确。")
+        if "supported_reasoning_levels" in row:
+            levels = row["supported_reasoning_levels"]
+            if (not isinstance(levels, list) or any(not isinstance(level, dict)
+                    or not isinstance(level.get("effort"), str)
+                    or level["effort"] not in {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+                    for level in levels)):
+                raise ConfigError("模型思考等级格式不正确。")
+            efforts = [level["effort"] for level in levels]
+            if len(set(efforts)) != len(efforts) or (row.get("default_reasoning_level") is not None
+                    and row["default_reasoning_level"] not in efforts):
+                raise ConfigError("模型默认思考等级不在支持列表中。")
     if len(set(slugs)) != len(slugs) or payload["model"] not in slugs:
         raise ConfigError("模型目录重复，或缺少默认模型。")
     try:
@@ -125,6 +131,15 @@ def validate_connection(payload: dict) -> dict:
     except (ValueError, TypeError):
         raise ConfigError("模型目录格式不正确。") from None
     return payload
+
+
+def effective_model_settings(payload: dict) -> dict:
+    settings = dict(payload["model_settings"])
+    model = next(row for row in payload["catalog"]["models"] if row["slug"] == payload["model"])
+    levels = [row["effort"] for row in model.get("supported_reasoning_levels", [])]
+    if levels and settings.get("model_reasoning_effort") not in levels:
+        settings["model_reasoning_effort"] = model.get("default_reasoning_level") or levels[0]
+    return settings
 
 
 def credential_auth(directory: Path, platform: str | None = None) -> dict:
@@ -141,61 +156,6 @@ def credential_auth(directory: Path, platform: str | None = None) -> dict:
     return {"command": "/bin/cat", "args": [str(key_path)]}
 
 
-def _read_connection(directory: Path) -> tuple[dict, tuple[Path, ...]]:
-    directory = directory.expanduser().absolute()
-    try:
-        document = tomllib.loads(read_bytes(directory / FILES[0]).decode("utf-8"))
-        if document.get("profile"):
-            raise ConfigError("客户端使用了独立 profile，暂不支持自动读取；请先取消默认 profile。")
-        if document.get("model_provider") != PROVIDER:
-            raise ConfigError("当前线路不是 Linux Manager 配置的 CLIProxyAPI，请选择正确的配置目录。")
-        provider = document["model_providers"][PROVIDER]
-        if provider.get("wire_api") != "responses" or provider.get("requires_openai_auth"):
-            raise ConfigError("当前提供商使用了不支持的协议或账号授权方式。")
-        allowed = {"name", "base_url", "wire_api", "auth", "requires_openai_auth"} | PROVIDER_SETTINGS
-        if set(provider) - allowed:
-            raise ConfigError("当前提供商包含额外的认证或连接设置，无法完整迁移。")
-        auth = provider.get("auth", {})
-        # Do not execute an arbitrary credential helper from a configuration file.
-        if auth.get("command") == "/bin/cat" and isinstance(auth.get("args"), list) and len(auth["args"]) == 1:
-            key_path = Path(auth["args"][0])
-        elif auth == credential_auth(directory):
-            key_path = directory / FILES[1]
-        else:
-            raise ConfigError("无法识别当前密钥读取方式；只支持 Linux Manager 或本工具生成的配置。")
-        if not key_path.is_absolute():
-            raise ConfigError("密钥路径必须是绝对路径。")
-        catalog_path = Path(document["model_catalog_json"])
-        payload = {"kind": "connection", "version": 1,
-                   "base_url": provider["base_url"].rstrip("/"),
-                   "api_key": read_bytes(key_path, 8192).decode("utf-8").strip(),
-                   "model": document["model"],
-                   "catalog": json.loads(read_bytes(catalog_path)),
-                   "model_settings": {k: document[k] for k in MODEL_SETTINGS if k in document},
-                   "provider_settings": {k: provider[k] for k in PROVIDER_SETTINGS if k in provider}}
-    except (ValueError, UnicodeError, KeyError, TypeError):
-        raise ConfigError("本机客户端配置不完整或格式错误，请检查配置目录。") from None
-    return validate_connection(payload), (directory / FILES[0], key_path, catalog_path)
-
-
-def read_connection(directory: Path) -> dict:
-    return _read_connection(directory)[0]
-
-
-def export_connection(directory: Path, password: str, destination: Path | None = None) -> tuple[dict, str]:
-    directory = directory.expanduser().absolute()
-    payload, source_paths = _read_connection(directory)
-    if destination is not None:
-        destination = destination.expanduser().absolute()
-        protected = (*source_paths, *(directory / name for name in (*FILES, "auth.json")))
-        if destination.resolve() in {path.resolve() for path in protected}:
-            raise ConfigError("不能覆盖客户端正在使用的配置文件，请选择其他文件名。")
-    content = encrypt(payload, password)
-    if destination is not None:
-        atomic_write(destination, content.encode("utf-8"))
-    return payload, content
-
-
 def render_config(original: bytes | None, payload: dict, directory: Path, platform=None) -> bytes:
     validate_connection(payload)
     try:
@@ -209,13 +169,22 @@ def render_config(original: bytes | None, payload: dict, directory: Path, platfo
             if key in document:
                 del document[key]
         document["model"] = payload["model"]
+        models_config = document.get("models", {})
+        if not isinstance(models_config, dict):
+            raise ConfigError("目标客户端的新会话配置格式错误。")
+        if "new_thread" in models_config:
+            new_thread = models_config["new_thread"]
+            if not isinstance(new_thread, dict):
+                raise ConfigError("目标客户端的新会话配置格式错误。")
+            new_thread["model"] = payload["model"]
+            new_thread.pop("reasoning_effort", None)
         document["model_provider"] = PROVIDER
         document["model_catalog_json"] = str(directory / FILES[2])
-        for key, value in payload["model_settings"].items():
+        for key, value in effective_model_settings(payload).items():
             document[key] = value
         if "model_providers" not in document:
             document["model_providers"] = tomlkit.table()
-        provider = {"name": "Linux CLIProxyAPI", "base_url": payload["base_url"], "wire_api": "responses",
+        provider = {"name": "CLIProxyAPI", "base_url": payload["base_url"], "wire_api": "responses",
                     **payload["provider_settings"], "auth": credential_auth(directory, platform)}
         document["model_providers"][PROVIDER] = provider
         output = tomlkit.dumps(document).encode("utf-8")
@@ -227,10 +196,10 @@ def render_config(original: bytes | None, payload: dict, directory: Path, platfo
         raise ConfigError("目标配置格式错误，未覆盖任何文件。") from None
 
 
-def _snapshot(directory: Path) -> dict:
+def _snapshot(directory: Path, files=FILES) -> dict:
     safe_path(directory)
     result = {}
-    for name in FILES:
+    for name in files:
         path = directory / name
         safe_path(path)
         result[name] = {"data": read_bytes(path), "mode": stat.S_IMODE(path.stat().st_mode)} if path.exists() else None
@@ -252,10 +221,10 @@ def _snapshot_payload(states: dict) -> dict:
         for name, row in states.items()}}
 
 
-def _backup_states(payload: dict) -> dict:
+def _backup_states(payload: dict, files=FILES) -> dict:
     if (set(payload) != {"kind", "version", "files"} or payload.get("kind") != "backup"
             or type(payload.get("version")) is not int or payload["version"] != 1
-            or not isinstance(payload.get("files"), dict) or set(payload["files"]) != set(FILES)):
+            or not isinstance(payload.get("files"), dict) or set(payload["files"]) != set(files)):
         raise ConfigError("不是本工具生成的恢复备份。")
     states = {}
     try:
@@ -271,7 +240,7 @@ def _backup_states(payload: dict) -> dict:
             if len(content) > MAX_LOCAL_BYTES:
                 raise ValueError()
             states[name] = {"data": content, "mode": row["mode"]}
-        if states[FILES[0]]:
+        if states.get(FILES[0]):
             config = tomllib.loads(states[FILES[0]]["data"].decode("utf-8"))
             # Restores are local snapshots, never a route for importing another machine's paths.
             if not isinstance(config, dict):
@@ -281,23 +250,61 @@ def _backup_states(payload: dict) -> dict:
     return states
 
 
-def _commit(directory: Path, before: dict, desired: dict, password: str) -> Path:
-    backup_dir = directory / "cliproxy-config-backups"
-    safe_path(backup_dir)
-    identifier = dt.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(4)
-    backup_path = backup_dir / (identifier + ".cproxybackup")
+def _commit(directory: Path, before: dict, desired: dict, password: str | None, files=FILES,
+            agent="codex", *, backup=True, backup_path: Path | None = None) -> Path | None:
     # Bind a restore to its original folder; portable connections are handled separately.
-    backup = _snapshot_payload(before)
-    backup["directory"] = str(directory)
-    atomic_write(backup_path, encrypt(backup, password).encode("utf-8"))
-    if not _same_states(_snapshot(directory), before):
+    if backup:
+        if backup_path is None:
+            identifier = dt.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(4)
+            backup_path = directory / "cliproxy-config-backups" / (identifier + ".cproxybackup")
+        backup_path = backup_path.expanduser().absolute()
+        safe_path(backup_path)
+        if backup_path.resolve() in {(directory / name).resolve() for name in (*files, "auth.json")}:
+            raise ConfigError("备份不能覆盖目标软件的配置文件。")
+        snapshot = _snapshot_payload(before)
+        snapshot["directory"] = str(directory)
+        if agent != "codex":
+            snapshot["agent"] = agent
+        content = encrypt(snapshot, password) if password is not None else encode_document(snapshot)
+        atomic_write(backup_path, content.encode("utf-8"))
+    else:
+        backup_path = None
+    with _pi_write_locks(directory) if agent == "pi" else nullcontext():
+        return _write_states(directory, before, desired, files, backup_path)
+
+
+@contextmanager
+def _pi_write_locks(directory: Path):
+    # Pi uses proper-lockfile's atomic .lock directories for both shared files.
+    # Cooperate with its login/refresh/settings writers instead of racing them.
+    acquired = []
+    try:
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        for name in ("auth.json", "settings.json"):
+            lock = directory / (name + ".lock")
+            safe_path(lock)
+            try:
+                lock.mkdir(mode=0o700)
+            except FileExistsError:
+                raise ConfigError("pi 正在更新登录或设置，已停止写入。请等操作完成后重试；不要手动删除正在使用的锁。") from None
+            acquired.append(lock)
+        yield
+    finally:
+        for lock in reversed(acquired):
+            lock.rmdir()
+
+
+def _write_states(directory: Path, before: dict, desired: dict, files: tuple, backup_path: Path | None):
+    if not _same_states(_snapshot(directory, files), before):
         raise ConfigError("备份期间客户端配置被其他程序修改，已停止应用，请重试。")
     changed = []
     try:
         for name, row in desired.items():
+            if _same_states({name: before[name]}, {name: row}):
+                continue
             path = directory / name
-            current = _snapshot(directory)
-            expected = {key: desired[key] if key in changed else before[key] for key in FILES}
+            current = _snapshot(directory, files)
+            expected = {key: desired[key] if key in changed else before[key] for key in files}
             if not _same_states(current, expected):
                 raise ConfigError("应用期间配置被其他程序修改，已停止应用。")
             changed.append(name)
@@ -305,7 +312,7 @@ def _commit(directory: Path, before: dict, desired: dict, password: str) -> Path
                 path.unlink(missing_ok=True)
             else:
                 atomic_write(path, row["data"], row["mode"])
-        if not _same_states(_snapshot(directory), desired):
+        if not _same_states(_snapshot(directory, files), desired):
             raise ConfigError("应用期间配置被其他程序修改，已停止应用。")
     except Exception:
         failed = []
@@ -326,62 +333,19 @@ def _commit(directory: Path, before: dict, desired: dict, password: str) -> Path
                     atomic_write(path, row["data"], row["mode"])
             except Exception:
                 failed.append(name)
+        detail = "备份：" + str(backup_path) if backup_path else "本次未生成备份。"
         if failed:
-            raise ConfigError("写入失败，部分文件无法撤回或被其他程序修改；未覆盖其他程序的修改。请检查并按需用加密备份恢复：" + str(backup_path)) from None
-        raise ConfigError("写入失败，已自动撤回本次修改。加密备份：" + str(backup_path)) from None
+            raise ConfigError("写入失败，部分文件无法撤回或被其他程序修改；未覆盖其他程序的修改。" + detail) from None
+        raise ConfigError("写入失败，已自动撤回本次修改。" + detail) from None
     return backup_path
 
 
-def apply_connection(directory: Path, payload: dict, password: str, platform=None) -> Path:
+def restore_backup(directory: Path, content: str | bytes, password: str | None = None,
+                   *, backup_path: Path | None = None) -> Path:
     directory = directory.expanduser().absolute()
-    before = _snapshot(directory)
-    output = render_config(before[FILES[0]]["data"] if before[FILES[0]] else None, payload, directory, platform)
-    catalog = (json.dumps(payload["catalog"], ensure_ascii=False, indent=2, allow_nan=False) + "\n").encode("utf-8")
-    desired = {FILES[0]: {"data": output, "mode": 0o600},
-               FILES[1]: {"data": payload["api_key"].encode("utf-8"), "mode": 0o600},
-               FILES[2]: {"data": catalog, "mode": 0o600}}
-    if any(len(row["data"]) > MAX_LOCAL_BYTES for row in desired.values()):
-        raise ConfigError("生成的客户端配置过大。")
-    return _commit(directory, before, desired, password)
-
-
-def restore_backup(directory: Path, content: str | bytes, password: str) -> Path:
-    directory = directory.expanduser().absolute()
-    payload = decrypt(content, password)
+    payload = decode_document(content, password)
     if payload.get("directory") != str(directory):
         raise ConfigError("恢复备份只能应用于生成它的原配置目录。跨电脑请使用导出的线路配置。")
     payload.pop("directory")
     desired = _backup_states(payload)
-    return _commit(directory, _snapshot(directory), desired, password)
-
-
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
-
-
-def check_connection(payload: dict) -> int:
-    validate_connection(payload)
-    request = urllib.request.Request(payload["base_url"].rstrip("/") + "/models",
-        headers={"Authorization": "Bearer " + payload["api_key"], "Accept": "application/json"})
-    context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    opener = urllib.request.build_opener(_NoRedirect(), urllib.request.HTTPSHandler(context=context))
-    try:
-        with opener.open(request, timeout=15) as response:
-            content = response.read(MAX_LOCAL_BYTES + 1)
-        if len(content) > MAX_LOCAL_BYTES:
-            raise ValueError()
-        rows = json.loads(content)["data"]
-        if not isinstance(rows, list):
-            raise ValueError()
-        models = {r["id"] for r in rows if isinstance(r, dict) and isinstance(r.get("id"), str)}
-        if payload["model"] not in models:
-            raise ConfigError("接口可访问，但默认模型已不在服务器列表中，请在源电脑重新配置后导出。")
-        return len(models)
-    except urllib.error.HTTPError as error:
-        if error.code in (401, 403):
-            raise ConfigError("服务器拒绝了 API 密钥，请检查密钥是否仍有效。") from None
-        raise ConfigError("服务器返回 HTTP " + str(error.code) + "，请检查接口地址和服务状态。") from None
-    except (OSError, ValueError, TypeError, KeyError):
-        raise ConfigError("连接失败，请检查网络、HTTPS 证书和服务器地址；本机配置未改动。") from None
-
+    return _commit(directory, _snapshot(directory), desired, password, backup_path=backup_path)

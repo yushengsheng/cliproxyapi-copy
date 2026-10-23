@@ -10,12 +10,13 @@ import tempfile
 import tomllib
 import unittest
 from unittest import mock
-import urllib.error
 
 from cliproxy_config import config
-from cliproxy_config.config import (FILES, PROVIDER, ConfigError, apply_connection, atomic_write,
-    check_connection, credential_auth, export_connection, read_connection, render_config, restore_backup)
+from cliproxy_config.agents import apply_agent
+from cliproxy_config.config import (FILES, PROVIDER, ConfigError, atomic_write, render_config, restore_backup)
 from cliproxy_config.crypto import MAX_FILE_BYTES, decrypt, encrypt
+from cliproxy_config.gateway import make_connection
+from model_fixtures import model_row
 
 
 PASSWORD = "fixture-密码-12345"
@@ -23,11 +24,11 @@ KEY = "fixture-secret-only"
 
 
 def connection():
-    return {"kind": "connection", "version": 1, "base_url": "https://fixture.invalid/v1", "api_key": KEY,
-            "model": "fixture-model", "catalog": {"models": [{"slug": "fixture-model", "display_name": "测试模型"},
-                                                       {"slug": "fixture-second"}]},
-            "model_settings": {"model_reasoning_effort": "high", "model_context_window": 64000},
-            "provider_settings": {"supports_websockets": False, "stream_idle_timeout_ms": 300000}}
+    payload = make_connection('https://fixture.invalid/v1', KEY,
+        [model_row('fixture-model', context=64000, display_name='测试模型'), model_row('fixture-second')], 'fixture-model')
+    payload['model_settings'].update(model_reasoning_effort='high', model_context_window=64000)
+    payload['provider_settings']['stream_idle_timeout_ms'] = 300000
+    return payload
 
 
 class EncryptionTests(unittest.TestCase):
@@ -76,6 +77,15 @@ class ConfigurationTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def assert_applied(self, directory, payload):
+        document = tomllib.loads((directory / FILES[0]).read_text(encoding='utf-8'))
+        self.assertEqual(document['model'], payload['model'])
+        self.assertEqual(document['model_providers'][PROVIDER]['base_url'], payload['base_url'])
+        for key, value in payload['model_settings'].items():
+            self.assertEqual(document[key], value)
+        self.assertEqual((directory / FILES[1]).read_text(encoding='utf-8'), payload['api_key'])
+        self.assertEqual(json.loads((directory / FILES[2]).read_bytes()), payload['catalog'])
+
     def test_preserves_unrelated_config_and_rewrites_native_paths(self):
         original = ('''# 用户注释\nmodel = "old"\nmodel_provider = "other"\nmodel_verbosity = "low"\n'''
                     '''[plugins."fixture@local"]\nenabled = true\n[model_providers.other]\nbase_url = "http://localhost"\n'''
@@ -83,7 +93,7 @@ class ConfigurationTests(unittest.TestCase):
         atomic_write(self.directory / FILES[0], original)
         auth = self.directory / "auth.json"
         atomic_write(auth, b'{"tokens":"do-not-migrate"}')
-        backup = apply_connection(self.directory, self.payload, PASSWORD)
+        backup = apply_agent("codex", self.directory, self.payload, PASSWORD)
         current = tomllib.loads((self.directory / FILES[0]).read_text(encoding="utf-8"))
         before = tomllib.loads(original.decode())
         self.assertIn("# 用户注释", (self.directory / FILES[0]).read_text(encoding="utf-8"))
@@ -93,7 +103,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(current["model"], self.payload["model"])
         self.assertNotIn("model_verbosity", current)
         self.assertEqual(current["model_catalog_json"], str(self.directory / FILES[2]))
-        self.assertEqual(read_connection(self.directory), self.payload)
+        self.assert_applied(self.directory, self.payload)
         self.assertEqual(auth.read_bytes(), b'{"tokens":"do-not-migrate"}')
         self.assertNotIn(KEY, backup.read_text(encoding="utf-8"))
         if sys.platform != "win32":
@@ -102,21 +112,42 @@ class ConfigurationTests(unittest.TestCase):
             auth_info = current["model_providers"][PROVIDER]["auth"]
             self.assertEqual(subprocess.check_output([auth_info["command"], *auth_info["args"]], text=True), KEY)
 
+    def test_native_catalog_replaces_32k_and_invalid_none_without_touching_other_settings(self):
+        rows = [model_row('gpt-6.1-sol', 'openai', 500000, ('low', 'medium', 'high', 'xhigh', 'max'),
+                          default_reasoning_level='low'),
+                model_row('claude-opus-5-5', 'anthropic', 1000000)]
+        for default in ('claude-opus-5-5', 'gpt-6.1-sol'):
+            with self.subTest(default=default):
+                payload = make_connection('https://fixture.invalid/v1', KEY, rows, default)
+                payload['model_settings']['model_reasoning_effort'] = 'none'
+                original = (b'model_reasoning_effort="none"\nmodel_context_window=32768\n'
+                            b'model_auto_compact_token_limit=28000\n[mcp_servers.keep]\ncommand="keep"\n'
+                            b'[models.new_thread]\nmodel="old"\nreasoning_effort="none"\n')
+                document = tomllib.loads(render_config(original, payload, self.directory).decode())
+                self.assertEqual(document['model_reasoning_effort'], 'low' if default == 'gpt-6.1-sol' else 'medium')
+                self.assertNotIn('model_context_window', document)
+                self.assertNotIn('model_auto_compact_token_limit', document)
+                self.assertNotIn('reasoning_effort', document['models']['new_thread'])
+                self.assertEqual(document['mcp_servers']['keep']['command'], 'keep')
+                payload['model_settings']['model_reasoning_effort'] = 'high'
+                document = tomllib.loads(render_config(original, payload, self.directory).decode())
+                self.assertEqual(document['model_reasoning_effort'], 'high')
+
     def test_import_onto_another_directory_and_repeated_application(self):
-        apply_connection(self.directory, self.payload, PASSWORD)
-        exported = encrypt(read_connection(self.directory), PASSWORD)
+        apply_agent("codex", self.directory, self.payload, PASSWORD)
+        exported = encrypt(self.payload, PASSWORD)
         destination = self.root / "新电脑配置"
-        apply_connection(destination, decrypt(exported, PASSWORD), PASSWORD)
-        self.assertEqual(read_connection(destination), self.payload)
+        apply_agent("codex", destination, decrypt(exported, PASSWORD), PASSWORD)
+        self.assert_applied(destination, self.payload)
         self.assertNotIn(str(self.directory), (destination / FILES[0]).read_text(encoding="utf-8"))
-        apply_connection(destination, self.payload, PASSWORD)
+        apply_agent("codex", destination, self.payload, PASSWORD)
         parsed = tomllib.loads((destination / FILES[0]).read_text(encoding="utf-8"))
         self.assertEqual(list(parsed["model_providers"]), [PROVIDER])
 
     def test_encrypted_restore_recovers_exact_bytes_and_missing_files(self):
         original = b'# preserve whitespace\nmodel="old"\n'
         atomic_write(self.directory / FILES[0], original, 0o640)
-        backup = apply_connection(self.directory, self.payload, PASSWORD)
+        backup = apply_agent("codex", self.directory, self.payload, PASSWORD)
         undo_backup = restore_backup(self.directory, backup.read_bytes(), PASSWORD)
         self.assertEqual((self.directory / FILES[0]).read_bytes(), original)
         self.assertFalse((self.directory / FILES[1]).exists())
@@ -124,10 +155,10 @@ class ConfigurationTests(unittest.TestCase):
         if sys.platform != "win32":
             self.assertEqual((self.directory / FILES[0]).stat().st_mode & 0o777, 0o640)
         restore_backup(self.directory, undo_backup.read_bytes(), PASSWORD)
-        self.assertEqual(read_connection(self.directory), self.payload)
+        self.assert_applied(self.directory, self.payload)
 
     def test_wrong_restore_password_and_other_directory_do_not_write(self):
-        backup = apply_connection(self.directory, self.payload, PASSWORD)
+        backup = apply_agent("codex", self.directory, self.payload, PASSWORD)
         before = config._snapshot(self.directory)
         with self.assertRaises(ConfigError):
             restore_backup(self.directory, backup.read_bytes(), "wrong-password")
@@ -152,7 +183,7 @@ class ConfigurationTests(unittest.TestCase):
             return writer(path, content, mode)
         with mock.patch.object(config, "atomic_write", side_effect=faulty):
             with self.assertRaisesRegex(ConfigError, "自动撤回"):
-                apply_connection(self.directory, self.payload, PASSWORD)
+                apply_agent("codex", self.directory, self.payload, PASSWORD)
         self.assertEqual(config._snapshot(self.directory), before)
         backups = list((self.directory / "cliproxy-config-backups").glob("*.cproxybackup"))
         self.assertEqual(len(backups), 1)
@@ -162,7 +193,7 @@ class ConfigurationTests(unittest.TestCase):
         for original in (b'profile="custom"\n', b"[broken"):
             atomic_write(self.directory / FILES[0], original)
             with self.assertRaises(ConfigError):
-                apply_connection(self.directory, self.payload, PASSWORD)
+                apply_agent("codex", self.directory, self.payload, PASSWORD)
             self.assertEqual((self.directory / FILES[0]).read_bytes(), original)
             self.assertFalse((self.directory / "cliproxy-config-backups").exists())
         if sys.platform != "win32":
@@ -171,7 +202,7 @@ class ConfigurationTests(unittest.TestCase):
             link = self.root / "link"
             link.symlink_to(actual)
             with self.assertRaisesRegex(ConfigError, "符号链接"):
-                apply_connection(link, self.payload, PASSWORD)
+                apply_agent("codex", link, self.payload, PASSWORD)
             self.assertEqual(list(actual.iterdir()), [])
 
     def test_arbitrary_imported_commands_and_invalid_models_are_rejected(self):
@@ -183,7 +214,7 @@ class ConfigurationTests(unittest.TestCase):
             payload = copy.deepcopy(self.payload)
             modify(payload)
             with self.assertRaises(ConfigError):
-                apply_connection(self.directory, payload, PASSWORD)
+                apply_agent("codex", self.directory, payload, PASSWORD)
             self.assertFalse(self.directory.exists())
 
     def test_windows_auth_quotes_path_and_uses_no_unix_commands(self):
@@ -206,49 +237,6 @@ class ConfigurationTests(unittest.TestCase):
             other[FILES[1]]["data"] = b"changed"
             self.assertFalse(config._same_states(states, other))
 
-    def test_export_does_not_execute_unknown_credential_helpers(self):
-        apply_connection(self.directory, self.payload, PASSWORD)
-        text = (self.directory / FILES[0]).read_text(encoding="utf-8")
-        original = credential_auth(self.directory)["command"]
-        text = text.replace(original.replace("\\", "\\\\"), "arbitrary-helper")
-        (self.directory / FILES[0]).write_text(text, encoding="utf-8")
-        with mock.patch("subprocess.run") as execute, self.assertRaisesRegex(ConfigError, "无法识别"):
-            read_connection(self.directory)
-        execute.assert_not_called()
-
-    def test_export_protects_config_paths_and_their_aliases(self):
-        apply_connection(self.directory, self.payload, PASSWORD)
-        atomic_write(self.directory / "auth.json", b'{"fixture":"account"}')
-        nested = self.directory / "nested"
-        nested.mkdir()
-        before = config._snapshot(self.directory)
-        for name in (*FILES, "auth.json"):
-            for destination in (self.directory / name, nested / ".." / name):
-                with self.subTest(destination=str(destination)), self.assertRaisesRegex(ConfigError, "不能覆盖"):
-                    export_connection(self.directory, PASSWORD, destination)
-        self.assertEqual(config._snapshot(self.directory), before)
-        self.assertEqual((self.directory / "auth.json").read_bytes(), b'{"fixture":"account"}')
-
-    def test_export_protects_custom_credential_and_catalog_paths(self):
-        apply_connection(self.directory, self.payload, PASSWORD)
-        key_path, catalog_path = self.root / "custom.key", self.root / "custom-models.json"
-        (self.directory / FILES[1]).rename(key_path)
-        (self.directory / FILES[2]).rename(catalog_path)
-        path = self.directory / FILES[0]
-        document = config.tomlkit.parse(path.read_text(encoding="utf-8"))
-        document["model_catalog_json"] = str(catalog_path)
-        document["model_providers"][PROVIDER]["auth"] = {"command": "/bin/cat", "args": [str(key_path)]}
-        path.write_text(config.tomlkit.dumps(document), encoding="utf-8")
-        for destination in (key_path, catalog_path):
-            original = destination.read_bytes()
-            with self.assertRaisesRegex(ConfigError, "不能覆盖"):
-                export_connection(self.directory, PASSWORD, destination)
-            self.assertEqual(destination.read_bytes(), original)
-        exported, content = export_connection(self.directory, PASSWORD, self.root / "export.cproxy")
-        self.assertEqual(exported, self.payload)
-        self.assertEqual(decrypt(content, PASSWORD), self.payload)
-        self.assertEqual((self.root / "export.cproxy").read_text(encoding="utf-8"), content)
-
     def test_backup_folder_and_mutation_races_abort_before_config_writes(self):
         atomic_write(self.directory / FILES[0], b'model="old"\n')
         original_encrypt = config.encrypt
@@ -258,7 +246,7 @@ class ConfigurationTests(unittest.TestCase):
             return result
         with mock.patch.object(config, "encrypt", side_effect=race):
             with self.assertRaisesRegex(ConfigError, "备份期间"):
-                apply_connection(self.directory, self.payload, PASSWORD)
+                apply_agent("codex", self.directory, self.payload, PASSWORD)
         self.assertEqual((self.directory / FILES[0]).read_bytes(), b'model="changed-by-user"\n')
         self.assertFalse((self.directory / FILES[1]).exists())
 
@@ -272,29 +260,9 @@ class ConfigurationTests(unittest.TestCase):
             return result
         with mock.patch.object(config, "atomic_write", side_effect=race):
             with self.assertRaisesRegex(ConfigError, "未覆盖其他程序"):
-                apply_connection(self.directory, self.payload, PASSWORD)
+                apply_agent("codex", self.directory, self.payload, PASSWORD)
         self.assertEqual((self.directory / FILES[0]).read_bytes(), b'model="new-user-edit"\n')
         self.assertFalse((self.directory / FILES[1]).exists())
-
-
-class ConnectionTests(unittest.TestCase):
-    def test_model_discovery_and_expired_keys(self):
-        response = mock.MagicMock()
-        response.__enter__.return_value.read.return_value = b'{"data":[{"id":"fixture-model"},{"id":"second"}]}'
-        opener = mock.Mock()
-        opener.open.return_value = response
-        with mock.patch.object(config.urllib.request, "build_opener", return_value=opener):
-            self.assertEqual(check_connection(connection()), 2)
-            request = opener.open.call_args.args[0]
-            self.assertEqual(request.full_url, "https://fixture.invalid/v1/models")
-            self.assertEqual(request.get_header("Authorization"), "Bearer " + KEY)
-            opener.open.side_effect = urllib.error.HTTPError(request.full_url, 401, "fixture", None, None)
-            with self.assertRaisesRegex(ConfigError, "拒绝"):
-                check_connection(connection())
-
-    def test_redirect_does_not_forward_credentials(self):
-        request = config.urllib.request.Request("https://fixture.invalid/v1/models", headers={"Authorization": KEY})
-        self.assertIsNone(config._NoRedirect().redirect_request(request, None, 302, "Found", {}, "https://other.invalid"))
 
 
 if __name__ == "__main__":

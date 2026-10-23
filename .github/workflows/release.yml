@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the verified release after all builds pass
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -80,6 +86,7 @@ jobs:
 
   release:
     name: Publish verified release
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -93,38 +100,10 @@ jobs:
           merge-multiple: true
           path: dist
       - name: Validate manifests and prepare release notes
-        shell: python
+        shell: bash
         env:
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          import hashlib, json, os, sys
-          from pathlib import Path
-          sys.path.insert(0, str(Path.cwd()))
-          from cliproxy_config import VERSION
-          directory = Path('dist')
-          archives = sorted(directory.glob('*.zip'))
-          assert len(archives) == 3, 'Expected three native release packages'
-          checksums = []
-          systems = []
-          for archive in archives:
-              report = json.loads(archive.with_suffix('.check.json').read_text(encoding='utf-8'))
-              digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-              assert report['version'] == VERSION and report['sha256'] == digest
-              assert report['source_match'] == 'ok' and report['runtime']['frozen']
-              assert all(report['runtime'][name] == 'ok' for name in ('crypto', 'migration', 'credential_helper', 'layout'))
-              checksums.append(digest + '  ' + archive.name)
-              minimum = report.get('minimum_system_version')
-              systems.append('- ' + archive.name + ('：最低 macOS ' + minimum if minimum else '：Windows x64 原生包'))
-          (directory / 'SHA256SUMS').write_text('\n'.join(checksums) + '\n', encoding='ascii')
-          notes = '# CLIProxyAPI 配置助手 v' + VERSION + '\n\n'
-          notes += Path('CHANGELOG.md').read_text(encoding='utf-8').split('## ' + VERSION + '\n', 1)[1]
-          notes += '\n## 下载及验证\n\n' + '\n'.join(systems) + '\n\n'
-          notes += '每个包均在对应 GitHub 原生 runner 中通过全部测试，并从最终压缩包解压运行，验证加密、迁移、备份恢复与本机密钥读取。校验值见 SHA256SUMS；详细验证见同名 .check.json。\n\n'
-          notes += 'Windows 包请解压完整目录后运行 CLIProxyAPI-Config.exe，无需安装 Python。macOS 包解压后打开 .app；使用临时签名，未经 Apple 公证，必要时在系统隐私与安全性设置中允许打开。\n\n'
-          notes += '构建记录：' + os.environ['RUN_URL'] + '\n'
-          Path('release-notes.md').write_text(notes, encoding='utf-8')
-          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as output:
-              output.write('RELEASE_VERSION=' + VERSION + '\n')
+        run: python scripts/release_manifest.py
       - name: Publish new version after every platform passed
         shell: bash
         env:
@@ -133,8 +112,8 @@ jobs:
         run: |
           release_tag="v$RELEASE_VERSION"
           if gh release view "$release_tag" >/dev/null 2>&1; then
-            echo "Release $release_tag already exists; its assets remain unchanged."
-            exit 0
+            echo "Release $release_tag already exists; choose a new version before publishing."
+            exit 1
           fi
           gh release create "$release_tag" dist/*.zip dist/*.check.json dist/SHA256SUMS \
             --target "$GITHUB_SHA" --title "CLIProxyAPI 配置助手 $release_tag" \

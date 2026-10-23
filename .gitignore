@@ -1,10 +1,12 @@
 .venv/
+.DS_Store
 __pycache__/
 *.pyc
 .pytest_cache/
 .ruff_cache/
 build/
 dist/
+/CLIProxyAPI 配置助手.app/
 *.spec
 *.cproxy
 *.cproxybackup

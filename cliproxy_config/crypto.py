@@ -22,6 +22,46 @@ _HEADER = {"format": "cliproxy-config", "version": 1,
 _AAD = json.dumps(_HEADER, sort_keys=True, separators=(",", ":")).encode("ascii")
 
 
+def parse_document(content: str | bytes) -> dict:
+    """Read the common JSON container without trusting a filename extension."""
+    if not isinstance(content, (str, bytes)):
+        raise ConfigError("配置内容必须是文本。")
+    try:
+        size = len(content.encode("utf-8")) if isinstance(content, str) else len(content)
+        if size > MAX_FILE_BYTES:
+            raise ConfigError("配置文件过大。")
+        value = json.loads(content.lstrip("\ufeff") if isinstance(content, str) else content.decode("utf-8-sig"))
+        if not isinstance(value, dict):
+            raise ValueError()
+        return value
+    except (ValueError, UnicodeError, RecursionError):
+        raise ConfigError("配置不是有效的 JSON 文件或文本。") from None
+
+
+def is_encrypted(content: str | bytes) -> bool:
+    return parse_document(content).get("format") == _HEADER["format"]
+
+
+def encode_document(payload: dict, password: str | None = None) -> str:
+    if password is not None:
+        return encrypt(payload, password)
+    content = json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
+    if len(content.encode("utf-8")) > MAX_PLAIN_BYTES:
+        raise ConfigError("配置内容过大，无法导出。")
+    return content
+
+
+def decode_document(content: str | bytes, password: str | None = None) -> dict:
+    value = parse_document(content)
+    if value.get("format") == _HEADER["format"]:
+        if password is None:
+            raise ConfigError("该配置已加密，请输入解密密码。")
+        return decrypt(json.dumps(value), password)
+    if value.get("kind") not in ("connection", "backup"):
+        raise ConfigError("不是本程序导出的模型节点或配置备份。")
+    return value
+
+
 def _key(password: str, salt: bytes) -> bytes:
     if not isinstance(password, str) or not password or len(password.encode("utf-8")) > 1024:
         raise ConfigError("请输入密码，密码长度不能超过 1024 字节。")
@@ -55,7 +95,7 @@ def decrypt(content: str | bytes, password: str) -> dict:
         salt, nonce, cipher = (base64.b64decode(envelope[k], validate=True) for k in ("salt", "nonce", "data"))
         if len(salt) != 16 or len(nonce) != 12 or len(cipher) < 16:
             raise ValueError()
-    except (ValueError, TypeError, KeyError, UnicodeError, binascii.Error):
+    except (ValueError, TypeError, KeyError, UnicodeError, binascii.Error, RecursionError):
         raise ConfigError("不是受支持的加密配置，或文件已经损坏。") from None
     try:
         plain = AESGCM(_key(password, salt)).decrypt(nonce, cipher, _AAD)
@@ -68,6 +108,6 @@ def decrypt(content: str | bytes, password: str) -> dict:
         if not isinstance(payload, dict):
             raise ValueError()
         return payload
-    except (ValueError, UnicodeError):
+    except (ValueError, UnicodeError, RecursionError):
         raise ConfigError("解密后的配置格式不正确。") from None
 
