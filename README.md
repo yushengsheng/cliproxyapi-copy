@@ -2,7 +2,7 @@
 
 轻量的原生桌面配置工具：从管理网页登录获取客户端密钥及模型，或导入已有模型节点，勾选后配置 GPT / Codex、Claude 桌面版、pi 或 Hermes。保留 Claude Code 命令行适配，和桌面版分开选择。
 
-当前准备发布 **0.2.0**，本地审核结果见 [RELEASE_AUDIT.md](RELEASE_AUDIT.md)，各平台构建结果以 GitHub Actions 为准。正式发行版需手动开启 `publish`。根目录 `.app` 是源码启动器，使用本项目 `.venv`；修改源码后关闭配置助手并重新打开即可，无需重新打包。
+当前版本 **0.2.0**。原生安装包由 GitHub 托管的各平台干净环境构建，下载见 [GitHub Releases](https://github.com/yushengsheng/cliproxyapi-copy/releases/latest)。本地审核记录见 [RELEASE_AUDIT.md](RELEASE_AUDIT.md)，最终构建结果以 GitHub Actions 为准。根目录 `.app` 是源码启动器，使用本项目 `.venv`；修改源码后关闭配置助手并重新打开即可，无需重新打包。
 
 界面与导入、预览、结果弹窗共用同一套样式，最小窗口为 960×720。耗时操作显示进度并暂时禁用相关按钮，完成或失败后恢复。
 
