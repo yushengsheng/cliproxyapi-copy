@@ -189,13 +189,26 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(len(backups), 1)
         self.assertEqual(decrypt(backups[0].read_bytes(), PASSWORD)["kind"], "backup")
 
-    def test_profile_invalid_toml_and_symlink_are_rejected(self):
-        for original in (b'profile="custom"\n', b"[broken"):
-            atomic_write(self.directory / FILES[0], original)
-            with self.assertRaises(ConfigError):
-                apply_agent("codex", self.directory, self.payload, PASSWORD)
-            self.assertEqual((self.directory / FILES[0]).read_bytes(), original)
-            self.assertFalse((self.directory / "cliproxy-config-backups").exists())
+    def test_profile_and_invalid_toml_are_recovered_before_import(self):
+        auth = self.directory / "auth.json"
+        atomic_write(auth, b'{"tokens":"keep-oauth"}')
+        for original in (b'profile="custom"\n[mcp_servers.keep]\ncommand="keep"\n', b"[broken"):
+            with self.subTest(original=original):
+                atomic_write(self.directory / FILES[0], original)
+                backup = apply_agent("codex", self.directory, self.payload, PASSWORD)
+                parsed = tomllib.loads((self.directory / FILES[0]).read_text(encoding="utf-8"))
+                self.assertEqual(parsed["model"], self.payload["model"])
+                self.assertEqual(parsed["model_provider"], PROVIDER)
+                if original.startswith(b"profile"):
+                    self.assertNotIn("profile", parsed)
+                    self.assertEqual(parsed["mcp_servers"]["keep"]["command"], "keep")
+                saved = decrypt(backup.read_bytes(), PASSWORD)
+                self.assertEqual(base64.b64decode(saved["files"][FILES[0]]["data"]), original)
+                self.assertEqual(auth.read_bytes(), b'{"tokens":"keep-oauth"}')
+                if original.startswith(b"profile"):
+                    restore_backup(self.directory, backup.read_bytes(), PASSWORD)
+                    self.assertEqual((self.directory / FILES[0]).read_bytes(), original)
+        self.assertTrue(auth.is_file())
         if sys.platform != "win32":
             actual = self.root / "actual"
             actual.mkdir()

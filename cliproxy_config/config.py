@@ -156,12 +156,49 @@ def credential_auth(directory: Path, platform: str | None = None) -> dict:
     return {"command": "/bin/cat", "args": [str(key_path)]}
 
 
+def _codex_document(original: bytes | None):
+    """Load a Codex document, rebuilding only the unusable routing shell."""
+    recovered = False
+    try:
+        document = tomlkit.parse((original or b"").decode("utf-8"))
+    except (UnicodeError, tomlkit.exceptions.ParseError):
+        # The import is an explicit request to replace the active route. Keep
+        # the raw bytes in the transaction snapshot so backup/rollback can
+        # still restore the broken file exactly.
+        document = tomlkit.document()
+        recovered = original is not None and bool(original)
+
+    if "profile" in document:
+        # A default profile redirects Codex away from the settings this tool
+        # writes. Removing it is the smallest repair for an explicit import.
+        del document["profile"]
+        recovered = True
+
+    providers = document.get("model_providers")
+    if providers is not None and not isinstance(providers, dict):
+        document["model_providers"] = tomlkit.table()
+        recovered = True
+
+    models_config = document.get("models")
+    if models_config is not None and not isinstance(models_config, dict):
+        document["models"] = tomlkit.table()
+        recovered = True
+    elif (isinstance(models_config, dict) and "new_thread" in models_config
+          and not isinstance(models_config["new_thread"], dict)):
+        del models_config["new_thread"]
+        recovered = True
+    return document, recovered
+
+
+def needs_codex_recovery(original: bytes | None) -> bool:
+    """Return whether importing will repair the existing Codex document."""
+    return _codex_document(original)[1]
+
+
 def render_config(original: bytes | None, payload: dict, directory: Path, platform=None) -> bytes:
     validate_connection(payload)
     try:
-        document = tomlkit.parse((original or b"").decode("utf-8"))
-        if document.get("profile"):
-            raise ConfigError("目标客户端正在使用独立 profile，请先取消默认 profile。")
+        document, _ = _codex_document(original)
         providers = document.get("model_providers", {})
         if not isinstance(providers, dict):
             raise ConfigError("目标客户端的提供商配置格式错误。")

@@ -181,6 +181,24 @@ class UnifiedDesktopFlowTests(unittest.TestCase):
         self.assertFalse((directory/'cliproxy-config-backups').exists())
         self.error.assert_not_called()
 
+    def test_codex_import_repairs_broken_config_before_writing(self):
+        import tomllib
+        from cliproxy_config.config import FILES, PROVIDER, atomic_write
+        self.fetch();self.app._select_all(True)
+        self.app.agent.set(AGENTS['codex'].label)
+        directory = self.root / 'broken-codex'
+        atomic_write(directory / FILES[0], b'[broken')
+        atomic_write(directory / 'auth.json', b'{"tokens":"keep-oauth"}')
+        self.app.directory.set(str(directory))
+        self.app.backup_enabled.set(False)
+        self.app._apply();self.complete()
+        parsed = tomllib.loads((directory / FILES[0]).read_text(encoding='utf-8'))
+        self.assertEqual(parsed['model_provider'], PROVIDER)
+        self.assertEqual((directory / 'auth.json').read_bytes(), b'{"tokens":"keep-oauth"}')
+        self.assertIn('已自动修复后导入', self.app.result_summary.get())
+        self.assertEqual(self.app.last_import_outcome, 'success')
+        self.error.assert_not_called()
+
     def test_remembers_both_paths_across_restart_without_saving_keys(self):
         import json
         self.fetch();self.app._select_all(True)

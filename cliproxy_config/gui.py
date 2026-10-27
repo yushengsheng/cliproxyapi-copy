@@ -16,7 +16,8 @@ from tkinterdnd2 import DND_FILES, DND_TEXT, TkinterDnD
 
 from . import VERSION
 from .agents import AGENTS, PI_PROVIDER, apply_agent, default_directory, prepare_import, preview_agent, restore_agent
-from .config import atomic_write, effective_model_settings, read_bytes, validate_connection
+from .config import (FILES, atomic_write, effective_model_settings, needs_codex_recovery,
+                     read_bytes, validate_connection)
 from .crypto import (ConfigError, MAX_FILE_BYTES, decode_document, encode_document, is_encrypted)
 from .browser import BROWSERS, BrowserUnavailable
 from .gateway import Gateway, fetch_models, make_connection, management_url, read_browser, test_model
@@ -47,6 +48,7 @@ class App(TkinterDnD.Tk):
         self.result_window = None
         self.last_import_plan = None
         self.last_import_outcome = None
+        self.last_codex_recovery = False
         self.preferences_path = preferences_path or Path.home() / ".config/cliproxyapi-config/preferences.json"
         try:
             preferences = json.loads(read_bytes(self.preferences_path, 65536))
@@ -541,7 +543,7 @@ class App(TkinterDnD.Tk):
         self._run(lambda: test_model(plan.payload, protocol), self.status.set,
                   f"正在实测 {plan.default_model}，可能消耗少量模型额度…")
 
-    def _show_import_result(self, agent, plan, backup=None, error=None):
+    def _show_import_result(self, agent, plan, backup=None, error=None, recovered=False):
         self.last_import_plan = plan
         self.last_import_outcome = "failed" if error else "success" if plan.accepted else "empty"
         if error:
@@ -550,6 +552,8 @@ class App(TkinterDnD.Tk):
             summary = f"配置已导入 {len(plan.accepted)} 个，跳过 {len(plan.skipped)} 个。请重开目标软件并新建会话。"
             if plan.default_changed:
                 summary += f"\n原默认模型 {plan.requested_default} 不兼容，已改用 {plan.default_model}。"
+            if agent == "codex" and recovered:
+                summary += "\n检测到本地 Codex 配置异常，已自动修复后导入。"
             summary += "\n备份：" + str(backup) if backup else "\n本次未备份旧配置。"
             summary += "\n已写入配置，未进行联网调用测试；实际可用性取决于上游接口、授权与额度。"
             if agent == "pi":
@@ -627,6 +631,7 @@ class App(TkinterDnD.Tk):
     def _apply(self):
         if self.busy:
             return
+        self.last_codex_recovery = False
         if self.result_window is not None:
             self.result_window.withdraw()
         try:
@@ -636,6 +641,10 @@ class App(TkinterDnD.Tk):
                 self._show_import_result(agent, plan)
                 return
             target, payload = self._target(), plan.payload
+            if agent == "codex":
+                config_path = target / FILES[0]
+                existing = read_bytes(config_path) if config_path.exists() else None
+                self.last_codex_recovery = needs_codex_recovery(existing)
             # Validate and render before asking for a password or backup destination.
             preview_agent(agent, target, payload)
             backup = self.backup_enabled.get()
@@ -652,12 +661,13 @@ class App(TkinterDnD.Tk):
             saved = self._save_preferences()
             if plan.default_changed:
                 self.model.set(plan.default_model)
-            self._show_import_result(agent, plan, backup=path)
+            self._show_import_result(agent, plan, backup=path, recovered=self.last_codex_recovery)
             if not saved:
                 self.status.set(self.status.get() + "\n保存路径偏好失败，下次可能无法记住。")
         self._run(lambda: apply_agent(agent, target, payload, password, backup=backup, backup_path=location),
                   done, f"正在导入 {len(plan.accepted)} 个兼容模型，跳过 {len(plan.skipped)} 个…",
-                  failed=lambda error: self._show_import_result(agent, plan, error=error))
+                  failed=lambda error: self._show_import_result(agent, plan, error=error,
+                                                                recovered=self.last_codex_recovery))
 
     def _restore(self):
         if self.busy:

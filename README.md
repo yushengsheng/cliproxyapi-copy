@@ -2,7 +2,7 @@
 
 轻量的原生桌面配置工具：从管理网页登录获取客户端密钥及模型，或导入已有模型节点，勾选后配置 GPT / Codex、Claude 桌面版、pi 或 Hermes。保留 Claude Code 命令行适配，和桌面版分开选择。
 
-当前版本 **0.2.0**。原生安装包由 GitHub 托管的各平台干净环境构建，下载见 [GitHub Releases](https://github.com/yushengsheng/cliproxyapi-copy/releases/latest)。本地审核记录见 [RELEASE_AUDIT.md](RELEASE_AUDIT.md)，最终构建结果以 GitHub Actions 为准。根目录 `.app` 是源码启动器，使用本项目 `.venv`；修改源码后关闭配置助手并重新打开即可，无需重新打包。
+当前版本 **0.2.1**。原生安装包由 GitHub 托管的各平台干净环境构建，下载见 [GitHub Releases](https://github.com/yushengsheng/cliproxyapi-copy/releases/latest)。本地审核记录见 [RELEASE_AUDIT.md](RELEASE_AUDIT.md)，最终构建结果以 GitHub Actions 为准。根目录 `.app` 是源码启动器，使用本项目 `.venv`；修改源码后关闭配置助手并重新打开即可，无需重新打包。
 
 界面与导入、预览、结果弹窗共用同一套样式，最小窗口为 960×720。耗时操作显示进度并暂时禁用相关按钮，完成或失败后恢复。
 
@@ -19,11 +19,18 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 ```
 
-启动器丢失时运行 `.venv/bin/python scripts/local_app.py`。源码也可用 `.venv/bin/python launch.py` 启动；Windows 使用 `.venv\Scripts\pythonw.exe launch.py`。需要 Python 3.11 以上且包含 Tk。启动日志位于 `~/Library/Logs/CLIProxyAPI-Config/local-launcher.log`。
+Windows 源码首次运行可在 PowerShell 中执行：
+
+```powershell
+py -3.11 -m venv .venv
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+启动器丢失时运行 `.venv/bin/python scripts/local_app.py`。源码也可用 `.venv/bin/python launch.py` 启动；Windows 可双击项目根目录的 **start_clipproxyapi.vbs**，它会使用 `.venv\Scripts\pythonw.exe` 静默启动，不显示黑色终端窗口；也可手动运行 `.venv\Scripts\pythonw.exe launch.py`。需要 Python 3.11 以上且包含 Tk。启动日志位于 `~/Library/Logs/CLIProxyAPI-Config/local-launcher.log`。
 
 ## 项目目录
 
-- `CLIProxyAPI 配置助手.app`、`launch.py`：当前本地程序入口。
+- `CLIProxyAPI 配置助手.app`、`start_clipproxyapi.vbs`、`launch.py`：当前本地程序入口。
 - `cliproxy_config/`：界面、网页登录、模型适配、节点加密和配置备份恢复。
 - `scripts/local_app.py`：创建源码启动器；`scripts/build.py` 和 `scripts/verify_release.py`：当前原生包的构建与校验工具。
 - `tests/`：当前功能的自动化测试；`third_party_licenses/`：第三方许可。
@@ -49,6 +56,8 @@ GitHub 工作流默认只构建和校验。发布需手动运行工作流并明�
 「预览配置」显示同样的筛选结果并隐藏密钥。筛选只作用于目标软件的配置，保留原勾选范围，导出仍包含全部勾选模型。「实测默认模型」会发送一条极短消息，可能消耗模型额度；默认模型不适用时提示重新选择，不会偷偷替换模型调用。获取列表、导入导出均不会主动进行模型推理。
 
 导入前完全退出目标软件，完成后重开并新建会话。旧会话可能保留原模型和上下文状态。
+
+Codex 一键导入前会检查现有 `config.toml`。发现顶层 profile、关键配置项类型异常或 TOML 损坏时，会先修复为可写入的基础配置，再导入所选模型；原文件仍按备份选项保存，写入失败会自动撤回。损坏 TOML 无法安全解析其中的其他设置，修复后需要重新确认 MCP、插件等配置；`auth.json` 和 OAuth 登录凭据不会被修改。
 
 ## 浏览器读取
 
