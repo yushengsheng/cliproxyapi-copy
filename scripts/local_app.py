@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import platform
 import plistlib
 import runpy
 import subprocess
@@ -52,6 +53,9 @@ fi
 cd "$task_root" || exit 1
 PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
 export PATH PYTHONUNBUFFERED=1
+if [ "$(/usr/bin/uname -s)" = "Darwin" ]; then
+    exec /usr/bin/arch -__PYTHON_ARCH__ "$task_root/.venv/bin/python" "$task_root/scripts/local_app.py" --run "$@"
+fi
 exec "$task_root/.venv/bin/python" "$task_root/scripts/local_app.py" --run "$@"
 '''
 
@@ -65,7 +69,8 @@ def create_launcher(root: Path = ROOT) -> Path:
         staged = Path(temp) / APP_NAME
         executable = staged / "Contents/MacOS/launcher"
         executable.parent.mkdir(parents=True)
-        executable.write_text(LAUNCHER, encoding="utf-8")
+        # Finder can start shell-based apps under Rosetta; match the local runtime.
+        executable.write_text(LAUNCHER.replace("__PYTHON_ARCH__", platform.machine()), encoding="utf-8")
         executable.chmod(0o755)
         (staged / "Contents/Info.plist").write_bytes(plistlib.dumps({
             "CFBundleIdentifier": BUNDLE_ID, "CFBundleName": "CLIProxyAPI 配置助手",

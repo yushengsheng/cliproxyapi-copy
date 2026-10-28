@@ -559,6 +559,8 @@ class App(TkinterDnD.Tk):
             if agent == "pi":
                 summary += (f"\npi：保留其他来源的账号与默认选择，以及思考偏好。输入 /model 选择 {PI_PROVIDER} 下的模型；"
                             "Ctrl+P 保留原切换范围并加入导入模型，原来未限制时仍可切换全部可用模型。")
+            if agent == "siyuan":
+                summary += "\n思源笔记：已同步自定义 API 和全部已选模型；重启思源后可在 AI 设置中切换模型。"
         else:
             summary = f"没有可导入的模型，已跳过 {len(plan.skipped)} 个，未修改任何配置。"
         self.status.set(summary.splitlines()[0] + ("详见导入结果。" if plan.accepted or plan.skipped else ""))

@@ -1,8 +1,8 @@
 # CLIProxyAPI 配置助手
 
-轻量的原生桌面配置工具：从管理网页登录获取客户端密钥及模型，或导入已有模型节点，勾选后配置 GPT / Codex、Claude 桌面版、pi 或 Hermes。保留 Claude Code 命令行适配，和桌面版分开选择。
+轻量的原生桌面配置工具：从管理网页登录获取客户端密钥及模型，或导入已有模型节点，勾选后配置 GPT / Codex、Claude 桌面版、pi、Hermes 或思源笔记。保留 Claude Code 命令行适配，和桌面版分开选择。
 
-当前版本 **0.2.1**。原生安装包由 GitHub 托管的各平台干净环境构建，下载见 [GitHub Releases](https://github.com/yushengsheng/cliproxyapi-copy/releases/latest)。本地审核记录见 [RELEASE_AUDIT.md](RELEASE_AUDIT.md)，最终构建结果以 GitHub Actions 为准。根目录 `.app` 是源码启动器，使用本项目 `.venv`；修改源码后关闭配置助手并重新打开即可，无需重新打包。
+当前版本 **0.2.2**。原生安装包由 GitHub 托管的各平台干净环境构建，下载见 [GitHub Releases](https://github.com/yushengsheng/cliproxyapi-copy/releases/latest)。本地审核记录见 [RELEASE_AUDIT.md](RELEASE_AUDIT.md)，最终构建结果以 GitHub Actions 为准。根目录 `.app` 是源码启动器，使用本项目 `.venv`；修改源码后关闭配置助手并重新打开即可，无需重新打包。
 
 界面与导入、预览、结果弹窗共用同一套样式，最小窗口为 960×720。耗时操作显示进度并暂时禁用相关按钮，完成或失败后恢复。
 
@@ -78,6 +78,7 @@ Windows 的网页登录使用内置窗口，需要系统 WebView2 Runtime；原�
 | pi | `~/.pi/agent`，兼容 `PI_CODING_AGENT_DIR` | Responses 提供商、所选模型与独立凭据；保留已有账号和默认选择 |
 | Hermes | `~/.hermes`，兼容 `HERMES_HOME` | YAML 具名提供商、Chat Completions 接口、所选模型及默认值 |
 | Claude Code · 命令行 | `~/.claude`，兼容 `CLAUDE_CONFIG_DIR` | Anthropic 网关、调用密钥、模型列表、默认模型与系列别名 |
+| 思源笔记 | macOS 自动识别当前工作区（通常为 `~/Library/Application Support/SiYuan`），其他平台回退 `~/SiYuan`，兼容 `SIYUAN_WORKSPACE` | 工作区 `conf/conf.json` 中的 OpenAI 兼容提供商、所选模型列表及编辑器/智能体默认模型 |
 
 保留其他提供商、插件、MCP、权限和终端等无关设置；Hermes 保留 YAML 注释。pi 密钥使用字面值凭据，不解释为环境变量或命令。
 
@@ -110,8 +111,13 @@ Windows 的网页登录使用内置窗口，需要系统 WebView2 Runtime；原�
 | Claude Code 命令行 | 可通过 Anthropic Messages 调用的对话模型 | 明确不支持 Messages 的模型 |
 | pi | 可通过 Responses 调用的对话模型，保留提供的视觉输入、上下文与思考能力 | 明确不支持 Responses 的模型 |
 | Hermes | 可通过 Chat Completions 调用的对话模型 | 明确不支持 Chat Completions 的模型 |
+| 思源笔记 | 可通过 Chat Completions 调用的对话模型 | 明确不支持 Chat Completions 的模型 |
 
 各目标都会跳过独立图片生成、嵌入、专用音视频等非对话模型，按服务端类型、输出模态、接口和已知专用模型名识别；不会因为名称包含 `image` 或支持图片输入而误拒绝正常对话模型。缺少 Codex 能力目录不妨碍其他目标导入；不会编造上下文或思考参数，pi 缺少上下文信息时仍使用原有保守值。Codex 的独立默认 profile 暂不自动改写。
+
+### 思源笔记
+
+选择「思源笔记」并指定工作区目录后，一键导入会更新工作区 `conf/conf.json` 的自定义 API 提供商，写入接口地址、密钥和全部已勾选模型，并将编辑器与智能体默认模型指向当前默认选择。导入完成后重启思源，在 AI 设置中可以切换已同步的模型；其他提供商和 AI 设置会保留。
 
 GPT 可以使用图像生成能力，但独立 `gpt-image-*` 不能直接写成 Codex 的主对话模型。它需要 Images API，或作为受支持 Responses 对话模型的 `image_generation` 工具使用；客户端和上游都需要支持这一调用方式。本工具当前配置的是各软件的主对话模型入口，尚未实现独立图片接口或图片工具配置。支持看图的 GPT / Claude 等对话模型可正常导入。参见 [OpenAI 图像生成](https://developers.openai.com/api/docs/guides/image-generation) 和 [Responses 图像生成工具](https://developers.openai.com/api/docs/guides/tools-image-generation)。
 

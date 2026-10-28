@@ -16,6 +16,8 @@ import tomllib
 import urllib.parse
 
 import tomlkit
+from ruamel.yaml import YAML
+from ruamel.yaml.error import YAMLError
 
 from .crypto import ConfigError, decode_document, encode_document, encrypt
 
@@ -277,12 +279,21 @@ def _backup_states(payload: dict, files=FILES) -> dict:
             if len(content) > MAX_LOCAL_BYTES:
                 raise ValueError()
             states[name] = {"data": content, "mode": row["mode"]}
-        if states.get(FILES[0]):
-            config = tomllib.loads(states[FILES[0]]["data"].decode("utf-8"))
+        if states.get(files[0]):
+            first_name = files[0].lower()
+            first_data = states[files[0]]["data"].decode("utf-8")
+            if first_name.endswith(".toml"):
+                config = tomllib.loads(first_data)
+            elif first_name.endswith(".json"):
+                config = json.loads(first_data)
+            elif first_name.endswith((".yaml", ".yml")):
+                config = YAML(typ="safe").load(first_data)
+            else:
+                config = None
             # Restores are local snapshots, never a route for importing another machine's paths.
-            if not isinstance(config, dict):
+            if config is not None and not isinstance(config, dict):
                 raise ValueError()
-    except (ValueError, TypeError, UnicodeError):
+    except (ValueError, TypeError, UnicodeError, YAMLError):
         raise ConfigError("恢复备份内容损坏。") from None
     return states
 

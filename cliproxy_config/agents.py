@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from io import StringIO
 import json
 import os
@@ -35,6 +36,11 @@ AGENTS = {
     "pi": Agent("pi", ("models.json", "settings.json", "auth.json"), "responses"),
     "hermes": Agent("Hermes", ("config.yaml",), "chat"),
     "claude-code": Agent("Claude Code · 命令行", ("settings.json",), "messages"),
+    # SiYuan stores workspace-wide settings in <workspace>/conf/conf.json.
+    # Its custom provider uses the OpenAI Chat Completions protocol and keeps
+    # a provider-scoped model registry, so importing every selected model also
+    # makes them available from SiYuan's model picker.
+    "siyuan": Agent("思源笔记", ("conf/conf.json",), "chat"),
 }
 PROVIDER = "cliproxyapi"
 # The CLIProxyAPI extension replaces its own provider at startup. Keep static
@@ -55,9 +61,28 @@ def default_directory(agent: str, home: Path | None = None, environment=None) ->
         return Path(env.get("XDG_CONFIG_HOME") or home / ".config") / "Claude-3p"
     variable, suffix = {"claude-code": ("CLAUDE_CONFIG_DIR", ".claude"),
                         "pi": ("PI_CODING_AGENT_DIR", ".pi/agent"),
-                        "hermes": ("HERMES_HOME", ".hermes")}[agent]
+                        "hermes": ("HERMES_HOME", ".hermes"),
+                        "siyuan": ("SIYUAN_WORKSPACE", "SiYuan")}[agent]
     value = env.get(variable)
-    path = Path(value).expanduser() if value else home / suffix
+    if value:
+        path = Path(value).expanduser()
+    elif agent == "siyuan":
+        # The macOS desktop build keeps its default workspace under the
+        # application-support directory.  Older builds and other platforms
+        # commonly use ~/SiYuan, so retain that fallback and honor a live
+        # workspace marker when more than one candidate exists.
+        candidates = []
+        if sys.platform == "darwin":
+            candidates.append(home / "Library/Application Support/SiYuan")
+        elif sys.platform == "win32":
+            candidates.append(Path(env.get("APPDATA") or home / "AppData/Roaming") / "SiYuan")
+        candidates.extend((home / suffix, home / "Documents/SiYuan"))
+        existing = [candidate for candidate in candidates
+                    if (candidate / "conf/conf.json").is_file()]
+        locked = [candidate for candidate in existing if (candidate / ".lock").exists()]
+        path = (locked[0] if locked else existing[0]) if existing else home / suffix
+    else:
+        path = home / suffix
     if not path.is_absolute():
         raise ConfigError(variable + " 必须是绝对路径。")
     return path
@@ -87,6 +112,40 @@ def _encode(value) -> bytes:
     return (json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n").encode("utf-8")
 
 
+def _siyuan_id(seed: str) -> str:
+    """Return a stable SiYuan node-shaped ID without embedding credentials."""
+    digest = hashlib.sha1(seed.encode("utf-8"), usedforsecurity=False).hexdigest()[:7]
+    return "20000101000000-" + digest
+
+
+def _siyuan_secret(value: str) -> str:
+    """Encode a SiYuan API secret with its workspace-compatible obfuscation."""
+    # SiYuan's util.AESEncrypt first hex-encodes UTF-8 text, then encrypts it
+    # with the fixed AES-CBC key/IV and stores the result as hex. The format is
+    # intentionally reversible and matches what the native settings page writes.
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    encoded = value.encode("utf-8").hex().encode("ascii")
+    padding = algorithms.AES.block_size // 8 - len(encoded) % (algorithms.AES.block_size // 8)
+    padded = encoded + bytes([padding]) * padding
+    cipher = Cipher(algorithms.AES(b"696D897C9AA0611B"), modes.CBC(b"RandomInitVector"))
+    encryptor = cipher.encryptor()
+    return (encryptor.update(padded) + encryptor.finalize()).hex()
+
+
+def _siyuan_models(rows: list[dict], provider_id: str) -> list[dict]:
+    models = []
+    for row in rows:
+        name = row["slug"]
+        model = {"id": _siyuan_id(f"{provider_id}:model:{name}"),
+                 "displayName": row.get("display_name") or name,
+                 "enabled": True, "name": name}
+        context = row.get("context_window")
+        if isinstance(context, int) and context > 0:
+            model["contextLength"] = context
+        models.append(model)
+    return models
+
+
 def prepare_import(agent: str, payload: dict) -> ImportPlan:
     if agent not in AGENTS:
         raise ConfigError("不支持的 Agent。")
@@ -106,6 +165,36 @@ def render_agent(agent: str, before: dict, payload: dict, directory: Path) -> di
         if agent == "codex":
             return {FILES[0]: render_config(original(FILES[0]), payload, directory),
                     FILES[1]: key.encode("utf-8"), FILES[2]: _encode(payload["catalog"])}
+        if agent == "siyuan":
+            document = _json(original("conf/conf.json"))
+            ai = _section(document, "ai")
+            providers = ai.setdefault("providers", [])
+            if not isinstance(providers, list) or any(not isinstance(item, dict) for item in providers):
+                raise ValueError()
+            provider_id = _siyuan_id("provider:" + PROVIDER)
+            models = _siyuan_models(rows, provider_id)
+            model_ids = {model["name"]: model["id"] for model in models}
+            secret = _siyuan_secret(key)
+            # Replace only the source previously created by this tool. Other
+            # SiYuan providers and their credentials remain available for
+            # manual switching, even if a user gave one the same display name.
+            providers = [item for item in providers if item.get("id") != provider_id]
+            providers.append({"id": provider_id, "displayName": "CLIProxyAPI", "enabled": True,
+                              "apiKey": secret, "baseURL": base, "protocol": "openai",
+                              "requestTimeout": 120, "models": models})
+            ai["providers"] = providers
+            preferred_id = model_ids[model]
+            editing = _section(ai, "editing")
+            editing["modelId"] = preferred_id
+            agent_settings = _section(ai, "agent")
+            agent_settings["modelId"] = preferred_id
+            # SiYuan versions before the provider registry used openAI fields.
+            # Keep those fields in sync when they are present in an existing
+            # workspace so an upgrade or downgrade keeps the same route.
+            legacy = ai.get("openAI")
+            if isinstance(legacy, dict):
+                legacy.update({"APIKey": secret, "APIModel": model, "APIBaseURL": base})
+            return {"conf/conf.json": _encode(document)}
         if agent == "claude":
             document = _json(original(CLAUDE_PROFILE))
             meta = _json(original("configLibrary/_meta.json"))

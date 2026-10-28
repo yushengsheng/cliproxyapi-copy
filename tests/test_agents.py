@@ -9,8 +9,8 @@ from unittest import mock
 from ruamel.yaml import YAML
 
 from cliproxy_config import config
-from cliproxy_config.agents import (AGENTS, PI_PROVIDER, apply_agent, default_directory, preview_agent,
-                                   render_agent, restore_agent)
+from cliproxy_config.agents import (AGENTS, PI_PROVIDER, _siyuan_secret, apply_agent, default_directory,
+                                   preview_agent, render_agent, restore_agent)
 from cliproxy_config.crypto import ConfigError, decrypt
 from cliproxy_config.gateway import make_connection
 from test_config import PASSWORD
@@ -39,6 +39,7 @@ class AgentAdapterTests(unittest.TestCase):
             'pi': {'models.json': b'{"providers":{"other":{"baseUrl":"https://keep.invalid"}}}',
                    'settings.json': b'{"theme":"keep"}', 'auth.json': b'{"other":{"type":"api_key","key":"keep"}}'},
             'hermes': {'config.yaml': b'# keep comment\nterminal:\n  backend: local\nproviders:\n  other:\n    api: https://keep.invalid/v1\n'},
+            'siyuan': {'conf/conf.json': b'{"kernelVersion":"fixture","ai":{"providers":[{"id":"keep","displayName":"CLIProxyAPI","enabled":true,"models":[]}]}}'},
         }
         for agent, definition in AGENTS.items():
             with self.subTest(agent=agent):
@@ -56,7 +57,10 @@ class AgentAdapterTests(unittest.TestCase):
                 combined = b'\n'.join(row['data'] for row in after.values())
                 for name in ('claude-fixture-one', 'claude-fixture-two'):
                     self.assertIn(name.encode(), combined)
-                self.assertIn(b'fixture-secret', combined)
+                if agent == 'siyuan':
+                    self.assertNotIn(b'fixture-secret', combined)
+                else:
+                    self.assertIn(b'fixture-secret', combined)
                 if agent == 'claude-code':
                     doc = json.loads(after['settings.json']['data'])
                     self.assertEqual(doc['permissions'], {'allow': ['Read']})
@@ -71,6 +75,18 @@ class AgentAdapterTests(unittest.TestCase):
                     doc = YAML().load(after['config.yaml']['data'])
                     self.assertEqual(doc['terminal']['backend'], 'local')
                     self.assertFalse(doc['providers']['cliproxyapi']['discover_models'])
+                elif agent == 'siyuan':
+                    doc = json.loads(after['conf/conf.json']['data'])
+                    providers = doc['ai']['providers']
+                    self.assertEqual(len(providers), 2)
+                    self.assertEqual(providers[0]['id'], 'keep')
+                    imported = next(row for row in providers if row['id'] != 'keep')
+                    self.assertEqual([row['name'] for row in imported['models']],
+                                     ['claude-fixture-one', 'claude-fixture-two'])
+                    self.assertEqual(doc['ai']['editing']['modelId'], imported['models'][1]['id'])
+                    self.assertEqual(doc['ai']['agent']['modelId'], imported['models'][1]['id'])
+                    self.assertEqual(imported['baseURL'], 'https://fixture.invalid/v1')
+                    self.assertEqual(imported['protocol'], 'openai')
                 undo = restore_agent(agent, directory, backup.read_bytes(), PASSWORD)
                 self.assertEqual(config._snapshot(directory, definition.files), before)
                 restore_agent(agent, directory, undo.read_bytes(), PASSWORD)
@@ -84,6 +100,24 @@ class AgentAdapterTests(unittest.TestCase):
         result = render_agent('pi', {}, payload(key), self.root)
         self.assertEqual(json.loads(result['auth.json'])[PI_PROVIDER]['key'], key)
         self.assertNotIn('apiKey', json.loads(result['models.json'])['providers'][PI_PROVIDER])
+
+    def test_siyuan_import_preserves_other_providers_and_updates_legacy_openai_fields(self):
+        original = {"kernelVersion": "fixture", "ai": {
+            "openAI": {"APIKey": "old", "APIModel": "old-model", "APIBaseURL": "https://old.invalid/v1"},
+            "providers": [{"id": "keep", "displayName": "Keep", "enabled": True, "models": []}],
+            "editing": {"temperature": 0.3}, "agent": {"maxRetries": 2}}}
+        directory = self.root / 'siyuan-legacy'
+        config.atomic_write(directory / 'conf/conf.json', json.dumps(original).encode())
+        apply_agent('siyuan', directory, payload(), backup=False)
+        result = json.loads((directory / 'conf/conf.json').read_bytes())
+        self.assertEqual(result['ai']['providers'][0], original['ai']['providers'][0])
+        imported = result['ai']['providers'][1]
+        self.assertEqual(imported['apiKey'], _siyuan_secret('fixture-secret'))
+        self.assertEqual(result['ai']['openAI'], {
+            'APIKey': _siyuan_secret('fixture-secret'), 'APIModel': 'claude-fixture-two',
+            'APIBaseURL': 'https://fixture.invalid/v1'})
+        self.assertEqual(result['ai']['editing']['temperature'], 0.3)
+        self.assertEqual(result['ai']['agent']['maxRetries'], 2)
 
     def test_pi_missing_input_modalities_keep_a_valid_text_default(self):
         connection = make_connection('https://fixture.invalid/v1', 'key',
@@ -258,7 +292,7 @@ class AgentAdapterTests(unittest.TestCase):
             self.assertFalse((self.root / agent).exists())
 
     def test_bad_config_and_wrong_backup_password_never_write(self):
-        for agent in ('claude-code', 'pi', 'hermes'):
+        for agent in ('claude-code', 'pi', 'hermes', 'siyuan'):
             directory = self.root / agent
             definition = AGENTS[agent]
             first = definition.files[0]
@@ -281,7 +315,7 @@ class AgentAdapterTests(unittest.TestCase):
     def test_malformed_native_backups_never_overwrite_working_configuration(self):
         from cliproxy_config.crypto import decode_document, encode_document
         import base64
-        for agent in ('claude', 'claude-code', 'pi', 'hermes'):
+        for agent in ('claude', 'claude-code', 'pi', 'hermes', 'siyuan'):
             with self.subTest(agent=agent):
                 directory = self.root / ('corrupt-backup-' + agent)
                 backup = apply_agent(agent, directory, payload(), backup_path=self.root / (agent + '.cproxybackup'))
@@ -317,10 +351,23 @@ class AgentAdapterTests(unittest.TestCase):
         with self.assertRaises(ConfigError):
             restore_agent('claude', directory, backup.read_bytes(), PASSWORD)
         for agent, variable in [('codex', 'CODEX_HOME'), ('pi', 'PI_CODING_AGENT_DIR'),
-                                ('hermes', 'HERMES_HOME'), ('claude-code', 'CLAUDE_CONFIG_DIR')]:
+                                ('hermes', 'HERMES_HOME'), ('claude-code', 'CLAUDE_CONFIG_DIR'),
+                                ('siyuan', 'SIYUAN_WORKSPACE')]:
             self.assertEqual(default_directory(agent, self.root, {variable: str(directory)}), directory)
             with self.assertRaises(ConfigError):
                 default_directory(agent, self.root, {variable: 'relative'})
+
+    def test_siyuan_mac_default_prefers_the_active_workspace(self):
+        app_support = self.root / 'Library/Application Support/SiYuan'
+        home_workspace = self.root / 'SiYuan'
+        for directory in (app_support, home_workspace):
+            config.atomic_write(directory / 'conf/conf.json', b'{"ai":{"providers":[]}}')
+        config.atomic_write(app_support / '.lock', b'')
+        with mock.patch('cliproxy_config.agents.sys.platform', 'darwin'):
+            self.assertEqual(default_directory('siyuan', self.root, {}), app_support)
+        (app_support / '.lock').unlink()
+        with mock.patch('cliproxy_config.agents.sys.platform', 'darwin'):
+            self.assertEqual(default_directory('siyuan', self.root, {}), app_support)
 
     def test_existing_new_thread_default_and_legacy_hermes_model_are_migrated(self):
         original = b'[models.new_thread]\nmodel="old"\nreasoning_effort="high"\n'

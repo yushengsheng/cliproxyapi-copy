@@ -54,7 +54,7 @@ class ModelSupportTests(unittest.TestCase):
                 model_row('claude-responses', api='openai-responses'),
                 model_row('claude-chat', wire_api='chat_completions')]
         expected = {'codex': 'claude-responses', 'pi': 'claude-responses', 'claude': 'claude-messages',
-                    'claude-code': 'claude-messages', 'hermes': 'claude-chat'}
+                    'claude-code': 'claude-messages', 'hermes': 'claude-chat', 'siyuan': 'claude-chat'}
         for agent, name in expected.items():
             with self.subTest(agent=agent):
                 plan = prepare_import(agent, connection(rows))

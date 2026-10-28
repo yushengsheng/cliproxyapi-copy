@@ -59,7 +59,7 @@ def run_self_check(app) -> dict:
         restore_backup(destination, undo.read_bytes(), password)
         if _snapshot(destination) != applied:
             raise RuntimeError("撤销恢复校验失败。")
-        for agent in ("claude", "claude-code", "pi", "hermes"):
+        for agent in ("claude", "claude-code", "pi", "hermes", "siyuan"):
             directory = root / agent
             backup = apply_agent(agent, directory, payload, password)
             if not all((directory / name).is_file() for name in AGENTS[agent].files):
